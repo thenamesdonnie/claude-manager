@@ -2,8 +2,8 @@
 
 Written 16 Sep 2026. The rules come from the Howff design notes (venue-finder DESIGN.md and its
 memory): one primary action per screen, progressive disclosure for the rest, motion that confirms
-rather than decorates, ease-out timing and never a bounce. Reduced-motion is deliberately not
-supported: this app has one user and he does not want it. Timings below are the ones Donnie has already approved on Howff: sheets
+rather than decorates, ease-out timing and never a bounce. Reduced-motion is deliberately not supported here;
+add it if you need it. Timings: sheets
 about 300 ms on `cubic-bezier(0.2, 0.8, 0.2, 1)`, small state changes 120 to 150 ms.
 
 ## Structure
@@ -164,8 +164,7 @@ siblings, so nothing jumps in standalone mode on iOS when a tab is short or the 
 - Memory card under New session: the unit's total against the 8 GB rail, the four biggest
   sessions, red copy past 85 percent.
 - The session sheet holds a real terminal (xterm.js over ttyd's websocket, mounted in the page,
-  no iframe). Touch inside it scrolls the terminal, not the sheet. The key row is the set Donnie
-  reaches for: Esc, Tab, Shift-Tab, arrows, Enter, Ctrl-C, and 1 2 3 for permission menus.
+  no iframe). Touch inside it scrolls the terminal, not the sheet. The key row is the set a phone keyboard hides: Esc, Tab, Shift-Tab, arrows, Enter, Ctrl-C, and 1 2 3 for permission menus.
   Actions: Open in Claude (deep link to the Remote Control conversation), Copy attach, Wrap up,
   Restart, Kill.
 - New session step 2 has a First message field. It is typed into the session once Claude's

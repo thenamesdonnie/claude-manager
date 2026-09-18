@@ -84,6 +84,9 @@ function loadConfig() {
     wrapPrompt: typeof c.wrapPrompt === "string" && c.wrapPrompt.trim() ? c.wrapPrompt : "/handoff",
     lastSession: c.lastSession || {},
     skillGroups: c.skillGroups || {},
+    // Reading your Claude Code OAuth token to fetch your own account limits is opt-in: a tool you
+    // just downloaded should not touch a credentials file until you say so.
+    accountLimits: c.accountLimits === true,
     // Optional shared secret. This app starts processes and types into them, so anything that can
     // reach it can run code as you. Empty = no check, which is only safe on a trusted network.
     token: typeof c.token === "string" ? c.token : (process.env.CLAUDE_SESSIONS_TOKEN || ""),
@@ -368,6 +371,7 @@ async function knownDirs() {
 // ---------- usage: the account limits and the per-conversation token index ----------
 let limitsCache = { at: 0, value: null, error: null };
 async function accountLimits() {
+  if (!config.accountLimits) return { at: Date.now(), value: null, error: "off", disabled: true };
   if (Date.now() - limitsCache.at < 60_000) return limitsCache;
   try {
     const token = readJson(CREDS, {})?.claudeAiOauth?.accessToken;
@@ -460,7 +464,7 @@ async function usageReport() {
     r.runningIn = sessions.find((s) => s.sessionId === r.sessionId && !s.dead)?.name || null;
   }
   perFile.sort((a, b) => b.window.out - a.window.out || b.week.out - a.week.out);
-  return { limits: lim.value, limitsError: lim.error, windows, totals, byDay, sessions: perFile.slice(0, 40), indexing };
+  return { limits: lim.value, limitsError: lim.error, limitsOff: Boolean(lim.disabled), windows, totals, byDay, sessions: perFile.slice(0, 40), indexing };
 }
 function zero() { return { out: 0, in: 0, cr: 0, cw: 0, n: 0 }; }
 function add(a, b) { a.out += b.out; a.in += b.in; a.cr += b.cr; a.cw += b.cw; a.n += b.n; }
@@ -704,9 +708,9 @@ async function state() {
     host: os.hostname(), home: HOME, now, socket: SOCKET,
     dirs: [...dirs.values()].sort((a, b) => (b.pinned - a.pinned) || (b.lastUsed - a.lastUsed)),
     sessions, screens, memory: mem,
-    limits: lim.value, limitsError: lim.error,
+    limits: lim.value, limitsError: lim.error, limitsOff: Boolean(lim.disabled),
     startup: config.startup, defaults: config.defaults, lastSession: config.lastSession,
-    settings: { notifyOnExit: config.notifyOnExit, autoTrust: config.autoTrust, autoResume: config.autoResume, idleHours: config.idleHours, wrapPrompt: config.wrapPrompt },
+    settings: { notifyOnExit: config.notifyOnExit, autoTrust: config.autoTrust, autoResume: config.autoResume, idleHours: config.idleHours, wrapPrompt: config.wrapPrompt, accountLimits: config.accountLimits },
     term: termUp,
   };
 }
@@ -888,7 +892,7 @@ const server = http.createServer(async (req, res) => {
           if (Array.isArray(body.startup)) config.startup = body.startup.filter((e) => e && typeof e.path === "string").map((e) => ({ path: e.path, resume: e.resume || "last", ...(e.permissionMode ? { permissionMode: e.permissionMode } : {}) }));
           if (Array.isArray(body.pinned)) config.pinned = body.pinned.filter((p) => p && typeof p.path === "string").map((p) => ({ path: p.path, label: slug(p.label || path.basename(p.path)) }));
           if (body.defaults && typeof body.defaults === "object") config.defaults = { ...config.defaults, ...body.defaults };
-          for (const k of ["notifyOnExit", "autoTrust", "autoResume"]) if (typeof body[k] === "boolean") config[k] = body[k];
+          for (const k of ["notifyOnExit", "autoTrust", "autoResume", "accountLimits"]) if (typeof body[k] === "boolean") { config[k] = body[k]; if (k === "accountLimits") limitsCache = { at: 0, value: null, error: null }; }
           if (Number(body.idleHours) > 0) config.idleHours = Number(body.idleHours);
           if (typeof body.wrapPrompt === "string" && body.wrapPrompt.trim()) config.wrapPrompt = body.wrapPrompt.trim();
           saveConfig();

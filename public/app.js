@@ -211,7 +211,7 @@ const needsCount = () => state ? state.sessions.filter((s) => !s.dead && s.needs
 
 // ---------- sessions tab ----------
 const sessionsEl = $('[data-screen="sessions"]');
-sessionsEl.innerHTML = `<header class="top"><h1>Claude sessions</h1><span class="sub" id="host"></span></header>
+sessionsEl.innerHTML = `<header class="top"><h1>Sessions</h1><span class="sub" id="host"></span></header>
   <button class="btn key primary big" id="new-session">New session</button>
   <div class="card" id="memcard"></div>
   <div class="section-head"><h2>Running</h2><div id="running-actions"></div></div>
@@ -265,7 +265,10 @@ function limitBar(label, l) {
 function renderUsage() {
   const u = usageData; if (!u) return;
   const lim = u.limits;
-  $("#limits").innerHTML = lim ? `<div class="meter-row"><span><b>Account limits</b></span></div>${limitBar("5-hour window", lim.fiveHour)}${limitBar("7-day, all models", lim.sevenDay)}${lim.limits.filter((l) => l.kind === "weekly_scoped").map((l) => limitBar(`7-day, ${l.model || "current model"}`, l)).join("")}` : `<div class="inline-error">Limits unavailable: ${esc(u.limitsError || "no data")}</div>`;
+  if (u.limitsOff) {
+    $("#limits").innerHTML = `<div class="meter-row"><span><b>Account limits</b></span></div><div class="meta" style="white-space:normal;margin-top:6px">Off. Turning this on lets the page read the Claude Code login token already saved on this machine and ask Anthropic for your own 5-hour and 7-day usage. It is sent nowhere else and never stored here.</div><button class="btn key small primary" style="margin-top:10px" id="limits-on">Turn on account limits</button>`;
+    $("#limits-on").onclick = async () => { try { state = await api("PUT", "/api/config", { accountLimits: true }); toast("On"); loadUsage(); } catch (e) { toast(e.message, true); } };
+  } else $("#limits").innerHTML = lim ? `<div class="meter-row"><span><b>Account limits</b></span></div>${limitBar("5-hour window", lim.fiveHour)}${limitBar("7-day, all models", lim.sevenDay)}${lim.limits.filter((l) => l.kind === "weekly_scoped").map((l) => limitBar(`7-day, ${l.model || "current model"}`, l)).join("")}` : `<div class="inline-error">Limits unavailable: ${esc(u.limitsError || "no data")}</div>`;
   const t = u.totals[usageWin];
   $("#usage-totals").innerHTML = `<div class="stat"><div><b>${tok(t.out)}</b><span>output</span></div><div><b>${tok(t.in + t.cw)}</b><span>input + cache writes</span></div><div><b>${t.n}</b><span>model calls</span></div></div>`;
   const rows = u.sessions.filter((s) => s[usageWin].n).sort((a, b) => b[usageWin].out - a[usageWin].out);
@@ -424,6 +427,7 @@ settingsEl.innerHTML = `<header class="top"><h1>Settings</h1></header>
   <div class="card setting" style="margin-top:14px"><div><div>Trust new folders for me</div><div class="meta">Answers the folder prompt for you.</div></div><label class="switch"><input type="checkbox" id="autoTrust"><span></span></label></div>
   <div class="card setting"><div><div>Resume after a memory-rail kill</div><div class="meta">Once, on the same conversation, with a Discord ping.</div></div><label class="switch"><input type="checkbox" id="autoResume"><span></span></label></div>
   <div class="card setting"><div><div>Discord ping when a session dies</div></div><label class="switch"><input type="checkbox" id="notifyOnExit"><span></span></label></div>
+  <div class="card setting"><div><div>Account limits</div><div class="meta">Reads the Claude login token saved on this machine to fetch your own usage limits.</div></div><label class="switch"><input type="checkbox" id="accountLimits"><span></span></label></div>
   <div class="card setting"><div><div>Offer to close after</div><div class="meta">hours idle</div></div><input class="field well short" id="idleHours" inputmode="numeric"></div>
   <div class="card"><div>Wrap-up message</div><div class="meta" style="white-space:normal">Sent by Wrap up. The session closes when Claude finishes.</div><input class="field well" id="wrapPrompt" style="margin-top:8px" autocapitalize="off"></div>
   <div class="section-head"><h2>Pinned directories</h2></div><div class="card" id="pinned"></div>
@@ -431,7 +435,7 @@ settingsEl.innerHTML = `<header class="top"><h1>Settings</h1></header>
   <div class="section-head"><h2>Event log</h2><button class="btn key small" id="events-refresh">Refresh</button></div><div class="card" id="events"><div class="empty">Loading…</div></div>
   <div class="section-head"><h2>How to attach</h2></div>
   <div class="card"><p style="margin:0 0 8px">From Termius on this box:</p><p style="margin:0"><code>cl</code> lists sessions, <code>cl rota-1</code> attaches.</p><p class="meta" style="white-space:normal;margin-top:8px">Detach with Ctrl-B then D. Own tmux socket, so plain <code>tmux ls</code> will not show them. Shortcut: <code>#sessions?start=&lt;label&gt;</code> opens the start sheet for a directory.</p></div>`;
-for (const k of ["autoTrust", "autoResume", "notifyOnExit"]) $("#" + k).onchange = (ev) => saveConfig({ [k]: ev.target.checked });
+for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits"]) $("#" + k).onchange = (ev) => saveConfig({ [k]: ev.target.checked });
 $("#idleHours").onchange = (ev) => saveConfig({ idleHours: Number(ev.target.value) });
 $("#wrapPrompt").onchange = (ev) => saveConfig({ wrapPrompt: ev.target.value });
 $("#events-refresh").onclick = loadEvents;
@@ -444,7 +448,7 @@ async function loadEvents() {
 function renderSettings() {
   $("#mode-seg").innerHTML = MODES.map((m) => `<button class="${state.defaults.permissionMode === m ? "active" : ""}" data-m="${m}">${m}</button>`).join("");
   $$("#mode-seg button").forEach((b) => (b.onclick = () => saveConfig({ defaults: { permissionMode: b.dataset.m } })));
-  for (const k of ["autoTrust", "autoResume", "notifyOnExit"]) $("#" + k).checked = state.settings[k];
+  for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits"]) $("#" + k).checked = state.settings[k];
   if (document.activeElement !== $("#idleHours")) $("#idleHours").value = state.settings.idleHours;
   if (document.activeElement !== $("#wrapPrompt")) $("#wrapPrompt").value = state.settings.wrapPrompt;
   const pinned = state.dirs.filter((d) => d.pinned);

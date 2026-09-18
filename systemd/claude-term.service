@@ -3,7 +3,7 @@
 # launcher's tmux sessions: the URL carries the session name as ?arg=rota-1. Loopback only; the
 # launcher proxies it under /term/ so the page works on any host. Command is a wrapper script
 # because ttyd permutes argv and eats a trailing -t (it segfaults otherwise).
-Description=Claude sessions web terminal (ttyd)
+Description=Claude Manager web terminal (ttyd)
 After=claude-sessions.service
 
 [Service]

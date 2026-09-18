@@ -1,9 +1,14 @@
 {
   "pinned": [
-    { "path": "/home/you/some-project", "label": "project" }
+    {
+      "path": "/home/you/some-project",
+      "label": "project"
+    }
   ],
   "startup": [],
-  "defaults": { "permissionMode": "default" },
+  "defaults": {
+    "permissionMode": "default"
+  },
   "notifyOnExit": false,
   "autoTrust": true,
   "autoResume": true,
@@ -12,5 +17,6 @@
   "ownerName": "",
   "token": "",
   "lastSession": {},
-  "skillGroups": {}
+  "skillGroups": {},
+  "accountLimits": false
 }

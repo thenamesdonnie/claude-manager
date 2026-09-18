@@ -1,4 +1,4 @@
-# Claude Sessions
+# Claude Manager
 
 A self-hosted manager for [Claude Code](https://claude.com/claude-code) sessions on your own
 machine. Open a page on your phone, tap a directory, and a Claude session starts there in tmux
@@ -29,8 +29,8 @@ left off or started fresh. No terminal, no typing.
 session cannot take the machine down quietly. A session killed by the rail is resumed once,
 automatically. Idle sessions are offered up for closing.
 
-**Usage.** Your live 5-hour and 7-day limits, then output tokens attributed per conversation, so
-you can see which piece of work is spending the window.
+**Usage.** Output tokens attributed per conversation, so you can see which piece of work is
+spending your window. Switch on account limits and it also shows your live 5-hour and 7-day bars.
 
 **Skills.** Every skill Claude can see, grouped into yours, installed, and Anthropic's, with what
 each one costs your context in characters. A four-way switch per skill writes Claude Code's own
@@ -51,14 +51,14 @@ Tested on Ubuntu 24.04. macOS is not supported yet: the memory meter and the pro
 ## Install
 
 ```bash
-git clone https://github.com/YOU/claude-sessions.git ~/claude-sessions
-cd ~/claude-sessions
+git clone https://github.com/thenamesdonnie/claude-manager.git
+cd claude-manager
 ./install.sh
 ```
 
 It installs two `systemd --user` services, links `cl` and `cs` into `~/.local/bin`, downloads
 [ttyd](https://github.com/tsl0922/ttyd) for the in-page terminal (skip with `--no-terminal`), and
-installs the `claude-sessions` skill. Everything lands in your home directory; nothing needs root.
+installs the `claude-manager` skill. Everything lands in your home directory; nothing needs root.
 Then open `http://<your-machine>:8795`.
 
 Two things it will tell you about if they are missing:
@@ -82,10 +82,12 @@ permission mode.
 - `BIND=127.0.0.1` in the unit restricts it to the machine itself if you would rather reach it
   over SSH forwarding.
 
-The usage panel reads your existing Claude Code OAuth token from `~/.claude/.credentials.json` and
-calls the same account endpoint Claude Code's own `/usage` uses. It is read locally, sent only to
-Anthropic, and never stored or logged by this app. That endpoint is undocumented, so treat the
-panel as a convenience that may stop working; nothing else depends on it.
+Account limits are **off until you turn them on**, in Settings or the Usage tab. When on, the app
+reads the Claude Code OAuth token already saved at `~/.claude/.credentials.json` and calls the same
+account endpoint Claude Code's own `/usage` uses. It runs as you, on your machine, reading your own
+file; the token is sent only to Anthropic and is never stored or logged here. That endpoint is
+undocumented, so treat the bars as a convenience that may stop working. Everything else, including
+the per-conversation token counts, works without it.
 
 ## Running a second instance
 

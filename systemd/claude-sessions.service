@@ -1,5 +1,5 @@
 [Unit]
-Description=Claude session launcher
+Description=Claude Manager
 # Starts the launcher, which owns the tmux server the Claude sessions live on. Remote Control
 # needs the network the moment a session starts, so waiting for a routable address matters.
 After=network-online.target

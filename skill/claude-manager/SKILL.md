@@ -1,9 +1,9 @@
 ---
-name: claude-sessions
+name: claude-manager
 description: Start, watch, steer and stop other Claude Code sessions on this box through the local session launcher (the `cs` command). Use when the user says "start a claude session in X", "open a session for the api repo", "spin up claude in <project> and tell it to…", "what sessions are running", "kill/wrap up that session", or asks about their Claude usage limits.
 ---
 
-# Claude sessions
+# Claude Manager
 
 The launcher (user service `claude-sessions.service`, a page on port 8795)
 runs Claude Code sessions in tmux on socket `claude`, one per `<label>-<n>`, each with Remote Control

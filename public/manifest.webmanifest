@@ -1,1 +1,1 @@
-{ "name": "Claude sessions", "short_name": "Claude", "start_url": "/", "display": "standalone", "background_color": "#111111", "theme_color": "#111111", "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }] }
+{ "name": "Claude Manager", "short_name": "Claude", "start_url": "/", "display": "standalone", "background_color": "#111111", "theme_color": "#111111", "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }] }

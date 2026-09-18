@@ -21,7 +21,7 @@ warn() { printf '\033[38;5;209m!! \033[0m %s\n' "$*" >&2; }
 if [ "${1:-}" = "--uninstall" ]; then
   systemctl --user disable --now claude-sessions.service claude-term.service 2>/dev/null || true
   rm -f "$UNITS/claude-sessions.service" "$UNITS/claude-term.service" "$BIN/cl" "$BIN/cs" "$BIN/claude-term-attach"
-  rm -rf "$UNITS/claude-sessions.service.d" "$SKILLS/claude-sessions"
+  rm -rf "$UNITS/claude-sessions.service.d" "$SKILLS/claude-manager"
   node - "$HOME/.claude/settings.json" <<'NODE' || true
 const fs = require("fs"), file = process.argv[2];
 let s; try { s = JSON.parse(fs.readFileSync(file, "utf8")); } catch { process.exit(0); }
@@ -61,7 +61,7 @@ TTYD="$(command -v ttyd || echo "$BIN/ttyd")"
 install -m 755 "$HERE/bin/cl" "$BIN/cl"
 install -m 755 "$HERE/bin/cs" "$BIN/cs"
 install -m 755 "$HERE/bin/claude-term-attach" "$BIN/claude-term-attach"
-mkdir -p "$SKILLS/claude-sessions"; cp "$HERE/skill/claude-sessions/SKILL.md" "$SKILLS/claude-sessions/SKILL.md"
+mkdir -p "$SKILLS/claude-manager"; cp "$HERE/skill/claude-manager/SKILL.md" "$SKILLS/claude-manager/SKILL.md"
 
 subst() { sed -e "s|__HOME__|$HOME|g" -e "s|__USER__|$USER|g" -e "s|__DIR__|$HERE|g" -e "s|__PORT__|$PORT|g" -e "s|__TERM_PORT__|$TERM_PORT|g" -e "s|__TTYD__|$TTYD|g" -e "s|__SOCKET__|${TMUX_SOCKET:-claude}|g" "$1"; }
 subst "$HERE/systemd/claude-sessions.service" > "$UNITS/claude-sessions.service"

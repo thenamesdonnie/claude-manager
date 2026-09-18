@@ -1,0 +1,27 @@
+[Unit]
+Description=Claude session launcher
+# Starts the launcher, which owns the tmux server the Claude sessions live on. Remote Control
+# needs the network the moment a session starts, so waiting for a routable address matters.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=__DIR__
+ExecStart=/usr/bin/env node server.mjs
+Restart=always
+RestartSec=3
+StandardOutput=append:__DIR__/server.log
+StandardError=append:__DIR__/server.log
+# The tmux server and every claude in it are children of this unit. A code
+# restart of the launcher must not take the sessions with it, so only the main
+# process is signalled on stop; the rest stay in the cgroup, under the rail.
+KillMode=process
+# A leaking Claude session can grow to tens of GB. OOMPolicy=continue means the kernel kills
+# the leaker alone instead of systemd tearing down every other session with it.
+OOMPolicy=continue
+# The real rail is in claude-sessions.service.d/memory.conf; edit it to suit your box.
+MemoryHigh=12G
+MemoryMax=16G
+
+[Install]
+WantedBy=default.target

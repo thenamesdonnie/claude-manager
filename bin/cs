@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# cs: drive the Claude session launcher (claude.home, ~/claude-sessions) from a shell.
+# Made so another Claude session can start, watch and stop sessions with one command each.
+#
+#   cs list                          running sessions: name, status, directory, title
+#   cs dirs                          pinned directories and their labels
+#   cs start <dir> [options]         start claude in a directory (dir = path or pinned label)
+#        -r last | <session-id>      resume the last conversation there, or a specific one
+#        -m "first message"          typed in once Claude's prompt is up
+#        -p auto|default|acceptEdits|plan
+#   cs new <name> [-in <parent>] [--no-git]   create a project folder (default under ~), pin it
+#   cs convos <dir>                  conversations in that directory (id, when, title)
+#   cs peek <name> [lines]           what is on that session's screen
+#   cs send <name> "text"            type a line and press Enter
+#   cs keys <name> Enter|Escape|Up|Down|Tab|BTab|C-c ...
+#   cs wrapup <name> ["prompt"]      send the wrap-up prompt, close when Claude finishes
+#   cs restart <name> | cs kill <name>
+#   cs skills [search]               every skill, grouped, with what it costs a session
+#   cs skill <name> on|name-only|user-invocable-only|off
+#   cs usage                         account limits and heaviest conversations
+#   cs events [n]                    the launcher's event log
+#
+# Every command prints JSON except list/dirs/convos/peek/usage, which print for humans.
+# Use `cs json <cmd>` to get raw JSON from any of them.
+set -euo pipefail
+API="${CS_API:-http://127.0.0.1:8795}"
+raw=0; [ "${1:-}" = "json" ] && { raw=1; shift; }
+cmd="${1:-help}"; shift || true
+get() { curl -sf "$API$1"; }
+post() { curl -sf -X POST "$API$1" -H 'content-type: application/json' -d "$2"; }
+die() { echo "cs: $*" >&2; exit 1; }
+need() { command -v jq >/dev/null || die "jq is needed"; }
+need
+resolve_dir() { # label or path -> path
+  local d="$1"
+  [[ "$d" = /* ]] && { echo "$d"; return; }
+  [[ "$d" = ~* ]] && { echo "${d/#\~/$HOME}"; return; }
+  local p; p=$(get /api/state | jq -r --arg l "$d" '.dirs[] | select(.label == $l) | .path' | head -1)
+  [ -n "$p" ] || die "no pinned directory called '$d' (try a full path, or: cs dirs)"
+  echo "$p"
+}
+case "$cmd" in
+  list)
+    out=$(get /api/state)
+    if [ $raw = 1 ]; then echo "$out" | jq '.sessions'; else
+      echo "$out" | jq -r '.sessions[] | "\(.name)\t\(if .dead then "exited \(.exitStatus)" elif .needs and .status != "busy" then "your turn" elif .status == "busy" then "working" else "idle" end)\t\(.path)\t\(.title // "")"' | column -t -s $'\t'
+      n=$(echo "$out" | jq '.sessions | length'); [ "$n" = 0 ] && echo "(no sessions)" || true; fi ;;
+  dirs)
+    out=$(get /api/state)
+    if [ $raw = 1 ]; then echo "$out" | jq '.dirs'; else echo "$out" | jq -r '.dirs[] | select(.pinned) | "\(.label)\t\(.path)"' | column -t -s $'\t'; fi ;;
+  start)
+    [ $# -ge 1 ] || die "usage: cs start <dir> [-r last|<id>] [-m msg] [-p mode]"
+    dir=$(resolve_dir "$1"); shift
+    resume=""; msg=""; mode=""
+    while [ $# -gt 0 ]; do case "$1" in -r) resume="$2"; shift 2;; -m) msg="$2"; shift 2;; -p) mode="$2"; shift 2;; *) die "unknown option $1";; esac; done
+    if [ "$resume" = last ]; then resume=$(get "/api/conversations?path=$(jq -rn --arg p "$dir" '$p|@uri')" | jq -r '.[0].id // empty'); fi
+    body=$(jq -n --arg p "$dir" --arg r "$resume" --arg m "$msg" --arg mode "$mode" '{path: $p} + (if $r != "" then {sessionId: $r} else {} end) + (if $m != "" then {initialPrompt: $m} else {} end) + (if $mode != "" then {permissionMode: $mode} else {} end)')
+    post /api/start "$body" || die "start failed: $(curl -s -X POST "$API/api/start" -H 'content-type: application/json' -d "$body" | jq -r .error)"; echo ;;
+  new)
+    [ $# -ge 1 ] || die "usage: cs new <name> [-in <parent>] [--no-git]"
+    name="$1"; shift; parent=""; git=true
+    while [ $# -gt 0 ]; do case "$1" in -in) parent="$2"; shift 2;; --no-git) git=false; shift;; *) die "unknown option $1";; esac; done
+    body=$(jq -n --arg n "$name" --arg p "$parent" --argjson g "$git" '{name:$n, git:$g} + (if $p != "" then {parent:$p} else {} end)')
+    post /api/project "$body" || die "create failed: $(curl -s -X POST "$API/api/project" -H 'content-type: application/json' -d "$body" | jq -r .error)"; echo ;;
+  convos)
+    [ $# -ge 1 ] || die "usage: cs convos <dir>"; dir=$(resolve_dir "$1")
+    out=$(get "/api/conversations?path=$(jq -rn --arg p "$dir" '$p|@uri')")
+    if [ $raw = 1 ]; then echo "$out"; else echo "$out" | jq -r '.[] | "\(.id[0:8])\t\(.mtime/1000 | strftime("%d %b %H:%M"))\t\(if .runningIn then "running in \(.runningIn)" else "" end)\t\(.title)"' | column -t -s $'\t'; fi ;;
+  peek) [ $# -ge 1 ] || die "usage: cs peek <name> [lines]"; get "/api/peek?name=$1&lines=${2:-40}" | jq -r '.lines[]' ;;
+  send) [ $# -ge 2 ] || die "usage: cs send <name> \"text\""; post /api/send "$(jq -n --arg n "$1" --arg t "$2" '{name:$n, text:$t, keys:["Enter"]}')"; echo ;;
+  keys) [ $# -ge 2 ] || die "usage: cs keys <name> KEY..."; n="$1"; shift; post /api/send "$(jq -n --arg n "$n" --args '{name:$n, keys:$ARGS.positional}' -- "$@")"; echo ;;
+  wrapup) [ $# -ge 1 ] || die "usage: cs wrapup <name> [prompt]"; post /api/wrapup "$(jq -n --arg n "$1" --arg p "${2:-}" '{name:$n} + (if $p != "" then {prompt:$p} else {} end)')"; echo ;;
+  restart) [ $# -ge 1 ] || die "usage: cs restart <name>"; post /api/restart "$(jq -n --arg n "$1" '{name:$n}')"; echo ;;
+  kill) [ $# -ge 1 ] || die "usage: cs kill <name>"; post /api/kill "$(jq -n --arg n "$1" '{name:$n}')"; echo ;;
+  skills)
+    out=$(get /api/skills)
+    if [ $raw = 1 ]; then echo "$out"; else
+      q="${1:-}"
+      echo "$out" | jq -r --arg q "$q" '"\(.cost.chars) chars from \(.cost.count) of \(.cost.total) skills load into every session\n"'
+      for g in yours installed anthropic; do
+        echo "$out" | jq -r --arg g "$g" --arg q "$q" '[.skills[] | select(.group == $g) | select($q == "" or (.name | ascii_downcase | contains($q)) or ((.description // "") | ascii_downcase | contains($q)))] | select(length > 0) | "== \($g | ascii_upcase) (\(length))", (.[] | "\(.name)	\(.mode)	\(.cost)c	\(if .source == "project" then .projectLabel elif .source == "plugin" then (.plugin | split("@")[0]) else .source end)")' | { read -r h && { echo "$h"; column -t -s $'	'; echo; }; } || true
+      done; fi ;;
+  skill)
+    [ $# -ge 2 ] || die "usage: cs skill <name> on|name-only|user-invocable-only|off"
+    post /api/skill/mode "$(jq -n --arg n "$1" --arg m "$2" '{name:$n, mode:$m}')" | jq -r --arg n "$1" '.skills[] | select(.name == $n) | "\(.name) is now \(.mode) (applies to new sessions)"' ;;
+  usage)
+    out=$(get /api/usage)
+    if [ $raw = 1 ]; then echo "$out"; else
+      echo "$out" | jq -r '"5-hour: \(.limits.fiveHour.percent // "?")%  resets \(.limits.fiveHour.resetsAt // "?")\n7-day:  \(.limits.sevenDay.percent // "?")%  resets \(.limits.sevenDay.resetsAt // "?")\n\nthis 5h window, output tokens by conversation:"'
+      echo "$out" | jq -r '.sessions[] | select(.window.n > 0) | "\(.window.out)\t\(.label // "")\t\(.title // "")"' | sort -rn | head -12 | column -t -s $'\t'; fi ;;
+  events) get "/api/events?limit=${1:-30}" | jq -r '.[] | "\(.at/1000 | strftime("%d %b %H:%M"))  \(.type)  \(del(.at,.type,.sessionId) | tostring)"' ;;
+  help|*) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

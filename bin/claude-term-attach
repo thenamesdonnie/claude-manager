@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# ttyd runs this with the session name from the URL (?arg=rota-1). A wrapper because ttyd's
+# option parser permutes its argv, so a bare `tmux ... attach -t` ending in -t crashes it.
+# TMUX_SOCKET must match the launcher's; the service passes it.
+exec tmux -L "${TMUX_SOCKET:-claude}" attach -t "=${1:?session name}"

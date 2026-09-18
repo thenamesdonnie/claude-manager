@@ -1,0 +1,16 @@
+[Unit]
+# The web terminal inside the session sheet. ttyd attaches a browser to one of the
+# launcher's tmux sessions: the URL carries the session name as ?arg=rota-1. Loopback only; the
+# launcher proxies it under /term/ so the page works on any host. Command is a wrapper script
+# because ttyd permutes argv and eats a trailing -t (it segfaults otherwise).
+Description=Claude sessions web terminal (ttyd)
+After=claude-sessions.service
+
+[Service]
+Environment=TMUX_SOCKET=__SOCKET__
+ExecStart=__TTYD__ -p __TERM_PORT__ -i lo -W -a -b /term -t fontSize=13 -t disableLeaveAlert=true -t titleFixed=Claude __HOME__/.local/bin/claude-term-attach
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

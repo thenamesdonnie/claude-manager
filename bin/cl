@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Attach to a Claude session made by the launcher (claude.home).
+#   cl            list them
+#   cl rota-1     attach (Ctrl-B then D to detach, swipe to scroll)
+# They live on their own tmux socket so the launcher's memory rail covers them.
+if [ $# -eq 0 ]; then
+  tmux -L claude list-sessions -F '#{session_name}  (#{?pane_dead,exited,running}, since #{t:session_created})' 2>/dev/null || echo "no Claude sessions running"
+  exit 0
+fi
+exec tmux -L claude attach -t "=$1"

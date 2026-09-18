@@ -1,0 +1,5 @@
+# Runtime state: your directories, your conversation ids, your event history.
+data/*
+!data/config.example.json
+server.log
+node_modules/

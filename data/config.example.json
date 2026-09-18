@@ -1,0 +1,16 @@
+{
+  "pinned": [
+    { "path": "/home/you/some-project", "label": "project" }
+  ],
+  "startup": [],
+  "defaults": { "permissionMode": "default" },
+  "notifyOnExit": false,
+  "autoTrust": true,
+  "autoResume": true,
+  "idleHours": 6,
+  "wrapPrompt": "/handoff",
+  "ownerName": "",
+  "token": "",
+  "lastSession": {},
+  "skillGroups": {}
+}

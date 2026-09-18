@@ -218,9 +218,9 @@ sessionsEl.innerHTML = `<header class="top"><h1>Sessions</h1><span class="sub" i
   <div id="session-list"></div><div class="empty" id="session-empty" hidden>Nothing running.</div>`;
 $("#new-session").onclick = () => newSessionFlow("start");
 function sessionCard(s) {
-  const title = s.title && s.title !== "Untitled conversation" ? s.title : s.managed ? "Fresh conversation, nothing said yet" : "Not started by this app";
+  const title = s.command ? s.command : s.title && s.title !== "Untitled conversation" ? s.title : s.managed ? "Fresh conversation, nothing said yet" : "Not started by this app";
   const flag = !s.dead && s.needs && s.status !== "busy";
-  return `<button class="card tappable key ${s.dead ? "dead" : ""} ${flag ? "needs" : ""}" data-session="${esc(s.name)}"><div class="row"><div class="grow"><div class="name">${esc(s.name)}</div><div class="title">${esc(title)}</div><div class="meta">${esc(s.path || "")} · up ${ago(s.createdAt)} · ${mb(s.memory)}${s.attached ? " · attached" : ""}</div></div>${pillFor(s)}</div></button>`;
+  return `<button class="card tappable key ${s.dead ? "dead" : ""} ${flag ? "needs" : ""}" data-session="${esc(s.name)}"><div class="row"><div class="grow"><div class="name">${esc(s.name)}</div><div class="title">${esc(title)}</div><div class="meta">${esc(s.path || "")} · up ${ago(s.createdAt)} · ${mb(s.memory)}${s.worktree ? " · worktree" : ""}${s.attached ? " · attached" : ""}</div></div>${pillFor(s)}</div></button>`;
 }
 function renderMemory() {
   const m = state.memory; if (!m || m.current == null) { $("#memcard").hidden = true; return; }
@@ -430,6 +430,7 @@ settingsEl.innerHTML = `<header class="top"><h1>Settings</h1></header>
   <div class="card setting"><div><div>Account limits</div><div class="meta">Reads the Claude login token saved on this machine to fetch your own usage limits.</div></div><label class="switch"><input type="checkbox" id="accountLimits"><span></span></label></div>
   <div class="card setting"><div><div>Offer to close after</div><div class="meta">hours idle</div></div><input class="field well short" id="idleHours" inputmode="numeric"></div>
   <div class="card"><div>Wrap-up message</div><div class="meta" style="white-space:normal">Sent by Wrap up. The session closes when Claude finishes.</div><input class="field well" id="wrapPrompt" style="margin-top:8px" autocapitalize="off"></div>
+  <div class="card"><div>Quick replies</div><div class="meta" style="white-space:normal">One tap each, under the message box in a session. One per line.</div><textarea class="field well" id="quickReplies" style="margin-top:8px;min-height:100px"></textarea></div>
   <div class="section-head"><h2>Pinned directories</h2></div><div class="card" id="pinned"></div>
   <div class="section-head"><h2>Old screen sessions</h2></div><div class="card" id="old-screens"></div>
   <div class="section-head"><h2>Event log</h2><button class="btn key small" id="events-refresh">Refresh</button></div><div class="card" id="events"><div class="empty">Loading…</div></div>
@@ -438,6 +439,7 @@ settingsEl.innerHTML = `<header class="top"><h1>Settings</h1></header>
 for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits"]) $("#" + k).onchange = (ev) => saveConfig({ [k]: ev.target.checked });
 $("#idleHours").onchange = (ev) => saveConfig({ idleHours: Number(ev.target.value) });
 $("#wrapPrompt").onchange = (ev) => saveConfig({ wrapPrompt: ev.target.value });
+$("#quickReplies").onchange = (ev) => saveConfig({ quickReplies: ev.target.value.split("\n") });
 $("#events-refresh").onclick = loadEvents;
 async function loadEvents() {
   try {
@@ -451,6 +453,7 @@ function renderSettings() {
   for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits"]) $("#" + k).checked = state.settings[k];
   if (document.activeElement !== $("#idleHours")) $("#idleHours").value = state.settings.idleHours;
   if (document.activeElement !== $("#wrapPrompt")) $("#wrapPrompt").value = state.settings.wrapPrompt;
+  if (document.activeElement !== $("#quickReplies")) $("#quickReplies").value = (state.settings.quickReplies || []).join("\n");
   const pinned = state.dirs.filter((d) => d.pinned);
   $("#pinned").innerHTML = pinned.length ? pinned.map((d) => `<div class="list-row"><div class="grow"><input class="label" value="${esc(d.label)}" data-path="${esc(d.path)}" aria-label="Label"><div class="meta">${esc(d.path)}</div></div><button class="btn key small ghost" data-unpin="${esc(d.path)}">Unpin</button></div>`).join("") : `<div class="empty">Nothing pinned.</div>`;
   $$("#pinned input.label").forEach((i) => (i.onchange = () => savePinned(pinned.map((d) => (d.path === i.dataset.path ? { path: d.path, label: i.value.trim() || d.label } : { path: d.path, label: d.label })))));
@@ -521,9 +524,13 @@ function conversationStep(sheet, dir) {
         <div class="setting" style="padding:6px 0"><div>Permission mode</div></div><div class="seg wide well" data-modes>${MODES.map((m) => `<button class="${m === state.defaults.permissionMode ? "active" : ""}" data-m="${m}">${m}</button>`).join("")}</div>
         <div class="setting" style="padding:12px 0 6px"><div>Name for tmux and Remote Control</div></div><input class="field well" data-label value="${esc(d.label)}" autocapitalize="off" autocorrect="off" spellcheck="false">
         <div class="setting" style="padding:12px 0 6px"><div>Pinned to the front</div><label class="switch"><input type="checkbox" data-pin ${d.pinned ? "checked" : ""}><span></span></label></div>
+        <div class="setting" style="padding:12px 0 6px"><div>In a new git worktree <div class="meta" style="white-space:normal">Its own branch and checkout, so it cannot touch the tree you are working in.</div></div><label class="switch"><input type="checkbox" data-worktree><span></span></label></div>
+        <div class="setting" style="padding:12px 0 6px"><div>Run</div></div>
+        <div class="seg wide well" data-cmd><button data-c="claude" class="active">claude</button><button data-c="codex">codex</button><button data-c="shell">shell</button></div>
       </details>
       <div class="inline-error" data-err hidden></div>`;
-    let mode = state.defaults.permissionMode;
+    let mode = state.defaults.permissionMode, cmd = "claude";
+    $$("[data-cmd] button", step).forEach((b) => (b.onclick = () => { cmd = b.dataset.c; $$("[data-cmd] button", step).forEach((x) => x.classList.toggle("active", x === b)); $$("[name=resume], [data-first]", step).forEach((x) => (x.disabled = cmd !== "claude")); }));
     $$("[data-modes] button", step).forEach((b) => (b.onclick = () => { mode = b.dataset.m; $$("[data-modes] button", step).forEach((x) => x.classList.toggle("active", x === b)); }));
     $("[data-more]", step)?.addEventListener("click", (e) => { $("[data-convos]", step).insertAdjacentHTML("beforeend", convos.slice(12).map(row).join("")); e.target.remove(); });
     const startBtn = $("[data-start]", step); startBtn.disabled = false;
@@ -539,7 +546,7 @@ function conversationStep(sheet, dir) {
         }
         const sessionId = $("input[name=resume]:checked", step).value || null;
         const initialPrompt = $("[data-first]", step).value.trim() || undefined;
-        const r = await api("POST", "/api/start", { path: dir, sessionId, permissionMode: mode, initialPrompt });
+        const r = await api("POST", "/api/start", { path: dir, sessionId, permissionMode: mode, initialPrompt, command: cmd, worktree: $("[data-worktree]", step).checked });
         haptic(); toast(`${r.name} started`);
         sheet.onclose = () => { const el = $(`#session-list [data-session="${CSS.escape(r.name)}"]`); el?.classList.add("highlight"); };
         sheet.close();
@@ -630,9 +637,11 @@ function sessionSheet(name) {
       ${useTerm ? `<div class="term" data-term></div>` : `<pre class="screen well" data-screen>…</pre>`}
       <div class="keys" data-keys></div>
       <form class="sendline" data-send><input class="field well" placeholder="Message" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send"><button class="btn key">Send</button></form>
+      <div class="strip quick" data-quick></div>
       <div class="keys" style="margin-top:14px">
         ${s0.appUrl ? `<a class="btn key small primary link-btn" href="${esc(s0.appUrl)}" target="_blank" rel="noopener">Open in Claude</a>` : ""}
         <button class="btn key small" data-copy>Copy attach</button>
+        <button class="btn key small" data-upload>Send a file</button>
         ${s0.managed ? `<button class="btn key small" data-wrap>Wrap up</button><button class="btn key small" data-restart>Restart</button>` : ""}
         <button class="btn key small danger" data-kill>${s0.dead ? "Close" : "Kill"}</button>
       </div>
@@ -642,6 +651,24 @@ function sessionSheet(name) {
     $("[data-restart]", el)?.addEventListener("click", (e) => { const s = current(); if (s?.dead) return doRestart(); armConfirm(e.currentTarget, "Restart?", doRestart); });
     $("[data-wrap]", el)?.addEventListener("click", (e) => armConfirm(e.currentTarget, "Wrap up?", async () => { try { await api("POST", "/api/wrapup", { name }); toast("Wrapping up"); refreshSheet(); } catch (err) { toast(err.message, true); } }));
     $("[data-send]", el).onsubmit = (ev) => { ev.preventDefault(); const i = $("input", ev.target); const t = i.value; i.value = ""; send({ text: t, keys: ["Enter"] }); };
+    const quick = $("[data-quick]", el);
+    quick.innerHTML = (state.settings.quickReplies || []).map((q) => `<button class="btn key small" data-q="${esc(q)}">${esc(q)}</button>`).join("");
+    $$("[data-q]", quick).forEach((b) => (b.onclick = () => send({ text: b.dataset.q, keys: ["Enter"] })));
+    // The file goes into the session's own directory and its path is typed in, so Claude knows
+    // it arrived. Getting a photo off a phone and into a project was three steps before.
+    $("[data-upload]", el).onclick = () => {
+      const input = document.createElement("input"); input.type = "file";
+      input.onchange = async () => {
+        const f = input.files[0]; if (!f) return;
+        const btn = $("[data-upload]", el); btn.disabled = true; btn.textContent = "Sending…";
+        try {
+          const r = await fetch(`/api/upload?path=${encodeURIComponent(current().path)}&name=${encodeURIComponent(f.name)}`, { method: "POST", body: f });
+          const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText);
+          toast(`${f.name} added`); send({ text: j.file, keys: [] });
+        } catch (e) { toast(e.message, true); } finally { btn.disabled = false; btn.textContent = "Send a file"; }
+      };
+      input.click();
+    };
   });
   const current = () => state.sessions.find((x) => x.name === name);
   // One scrolling strip of keys, the way Termius does it, plus a keyboard toggle that is fixed

@@ -1,14 +1,36 @@
 # Claude Manager
 
-A self-hosted manager for [Claude Code](https://claude.com/claude-code) sessions on your own
-machine. Open a page on your phone, tap a directory, and a Claude session starts there in tmux
-with Remote Control on. It comes back by itself after a reboot.
+A self-hosted control panel for the [Claude Code](https://claude.com/claude-code) sessions running
+on your own machine. Start one in any project from your phone, see which ones are waiting on you,
+and find out what your installed skills are quietly costing every session you open.
 
-It exists because the alternative was: open a terminal app, start a screen session, `cd` to the
-project, run `claude`, turn on remote control, and do that again for every project, every time the
-machine restarted. And `screen` cannot scroll on a phone keyboard without a chord.
+![Sessions, a live session, and the skills tab](docs/screens.jpg)
 
-![The sessions list, a running session, and the usage tab](docs/screens.jpg)
+It began as a fix for a daily annoyance: open a terminal app, start a screen session, `cd` to the
+project, run `claude`, turn on remote control, repeat for every project, repeat again after every
+reboot. It grew the parts that turned out to matter more: knowing when a session needs you, knowing
+which conversation is eating your usage window, and knowing that twenty skills you installed for
+one video project are describing themselves to Claude in every session you start.
+
+## What makes it different
+
+Session managers for Claude Code exist, and [Codeman](https://github.com/Ark0N/Codeman) is the big
+one: many agents, multi-user, Docker isolation, subagent visualisation. If you want mission control
+for a fleet, start there. This is a smaller tool with a different centre of gravity.
+
+- **It manages your skills, not just your sessions.** Every skill Claude can see, grouped into
+  yours, installed and Anthropic's, with the characters each one costs your context. A four-way
+  switch per skill writes Claude Code's own `skillOverrides`. Turning one installed suite to
+  slash-only cut 11,501 characters from every session on the machine this was built on, while
+  keeping its slash commands working. No other manager I found touches this.
+- **It knows when a session needs you, rather than guessing.** Claude Code's own `Notification` and
+  `Stop` hooks report it, so "your turn" means Claude actually asked, not that the terminal went
+  quiet for a while.
+- **It watches the box, not just the agents.** Every session shares one cgroup memory rail. The
+  page shows the total, names the fattest session, and a session the kernel kills for memory is
+  resumed once, automatically, with a ping.
+- **It is one Node file with no dependencies.** No build, no `npm install`, no container. Clone,
+  run the installer, done.
 
 ## What it does
 
@@ -37,6 +59,13 @@ each one costs your context in characters. A four-way switch per skill writes Cl
 `skillOverrides`, so you can stop a 20-skill suite advertising itself in every session while
 keeping its slash commands. Turning one suite to slash-only cut 11,501 characters from every
 session on the machine this was built for.
+
+**Built for a phone.** Quick replies you tap instead of typing, a file picker that drops a photo or
+a log straight into the project directory and tells Claude where it landed, and a swipe-dismissed
+sheet over a real terminal.
+
+**Worktrees and other engines.** Start a session in a fresh git worktree so it cannot touch the
+tree you are working in, or start `codex` or a plain shell in the same directory instead.
 
 **Scriptable.** `cs` drives all of it from a shell, and the bundled skill teaches Claude to use it,
 so you can say "start a session in the api repo and tell it to fix the failing test" to a session
@@ -145,6 +174,18 @@ cs events [n]                 the launcher's log
 `UX.md` is the written spec for how every element behaves and why: the sheet, its swipe dismissal,
 the tactile key styling, the terminal's touch scrolling, and the traps each one cost. Worth reading
 before changing the front end.
+
+## Prior art
+
+Worth knowing about before you pick one:
+
+- [Codeman](https://github.com/Ark0N/Codeman) — the most developed of these. Nine agent types,
+  multi-user, Docker isolation, a respawn controller for day-long autonomous runs.
+- [Claude tmux Manager](https://github.com/anonymonstar/Claude_tmux_manager) — FastAPI dashboard
+  with AI-written session summaries and per-session cost.
+- [claudux](https://github.com/snazzybean/claudux) and
+  [claude-session-manager](https://github.com/wolfpeter/claude-session-manager) — the same tmux
+  plus browser shape, smaller.
 
 ## Licence
 

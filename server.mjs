@@ -82,6 +82,9 @@ function loadConfig() {
     autoResume: c.autoResume !== false,
     idleHours: Number(c.idleHours) > 0 ? Number(c.idleHours) : 6,
     wrapPrompt: typeof c.wrapPrompt === "string" && c.wrapPrompt.trim() ? c.wrapPrompt : "/handoff",
+    // Lines you send often, one tap each. Typing a sentence on a phone is the slow part of
+    // steering a session from the sofa.
+    quickReplies: Array.isArray(c.quickReplies) ? c.quickReplies.filter((q) => typeof q === "string" && q.trim()).slice(0, 12) : ["continue", "yes, go ahead", "stop and explain what you just did", "commit and push"],
     lastSession: c.lastSession || {},
     skillGroups: c.skillGroups || {},
     // Reading your Claude Code OAuth token to fetch your own account limits is opt-in: a tool you
@@ -183,7 +186,7 @@ async function listSessions() {
     const meta = live[name] || {};
     seen.set(name, {
       name, path: meta.path || null, label: meta.path ? labelFor(meta.path) : name.replace(/-\d+$/, ""),
-      sessionId: meta.sessionId || null, permissionMode: meta.permissionMode || null, origin: meta.origin || "unknown",
+      sessionId: meta.sessionId || null, permissionMode: meta.permissionMode || null, origin: meta.origin || "unknown", command: meta.command || null, worktree: Boolean(meta.worktree),
       createdAt: Number(created) * 1000, attached: attached !== "0", dead: dead === "1",
       exitStatus: dead === "1" ? Number(deadStatus) : null, lastActivity: Number(activity) * 1000,
       pid: Number(pid), managed: Boolean(live[name]),
@@ -215,11 +218,36 @@ async function sendKeys(name, { text, keys }) {
 }
 
 // ---------- starting, and what happens right after ----------
-async function startSession({ path: dir, sessionId, permissionMode, initialPrompt, origin = "ui" }) {
+// A git worktree off the same repo, so a session can work on a branch without touching the tree
+// you are using right now. `<repo>/.claude/worktrees/<name>` is Claude Code's own convention.
+async function makeWorktree(dir, name) {
+  const { stdout: top } = await run("git", ["-C", dir, "rev-parse", "--show-toplevel"]).catch(() => { throw new Error("Not a git repository, so there is nothing to branch from"); });
+  const repo = top.trim();
+  const wt = path.join(repo, ".claude", "worktrees", name);
+  if (fs.existsSync(wt)) throw new Error(`${wt} already exists`);
+  fs.mkdirSync(path.dirname(wt), { recursive: true });
+  await run("git", ["-C", repo, "worktree", "add", "-b", name, wt]);
+  event("worktree", { repo, worktree: wt, branch: name });
+  return wt;
+}
+async function startSession({ path: dir, sessionId, permissionMode, initialPrompt, worktree, command, origin = "ui" }) {
   if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error(`Not a directory: ${dir}`);
   const sessions = await listSessions();
   const label = labelFor(dir);
   const name = nextName(label, sessions);
+  if (worktree) dir = await makeWorktree(dir, name);
+  // Anything that is not Claude gets a plain pane: no conversation, no first message, just a
+  // terminal in that directory. Useful for a second engine or a quick shell from the phone.
+  if (command && command !== "claude") {
+    const run_ = command === "shell" ? (process.env.SHELL || "bash") : command;
+    if (!/^[\w./ -]{1,120}$/.test(run_)) throw new Error("That command has characters I will not pass to a shell");
+    await tmux("new-session", "-d", "-s", name, "-c", dir, "-x", "200", "-y", "50", "bash", "-lc", `cd ${shq(dir)} && exec ${run_}`);
+    await tmux("set-option", "-g", "remain-on-exit", "on").catch(() => {});
+    live[name] = { path: dir, sessionId: null, command: run_, startedAt: Date.now(), origin };
+    saveLive();
+    event("start-command", { name, path: dir, command: run_ });
+    return { name, command: run_ };
+  }
   const id = sessionId || randomUUID();
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Bad session id");
   // A session that died before its first message has no file to resume, so it is started
@@ -239,10 +267,10 @@ async function startSession({ path: dir, sessionId, permissionMode, initialPromp
   const cmd = `cd ${shq(dir)} && exec claude ${args.map(shq).join(" ")}`;
   await tmux("new-session", "-d", "-s", name, "-c", dir, "-x", "200", "-y", "50", "bash", "-lc", cmd);
   await tmux("set-option", "-g", "remain-on-exit", "on").catch(() => {});
-  live[name] = { path: dir, sessionId: id, permissionMode: mode, startedAt: Date.now(), origin };
+  live[name] = { path: dir, sessionId: id, permissionMode: mode, startedAt: Date.now(), origin, ...(worktree ? { worktree: true } : {}) };
   saveLive();
   config.lastSession[dir] = id; saveConfig();
-  event("start", { name, path: dir, sessionId: id, fresh, origin });
+  event("start", { name, path: dir, sessionId: id, fresh, origin, ...(worktree ? { worktree: true } : {}) });
   settle(name, initialPrompt).catch((e) => log(`settle ${name}:`, e.message));
   return { name, sessionId: id };
 }
@@ -710,7 +738,7 @@ async function state() {
     sessions, screens, memory: mem,
     limits: lim.value, limitsError: lim.error, limitsOff: Boolean(lim.disabled),
     startup: config.startup, defaults: config.defaults, lastSession: config.lastSession,
-    settings: { notifyOnExit: config.notifyOnExit, autoTrust: config.autoTrust, autoResume: config.autoResume, idleHours: config.idleHours, wrapPrompt: config.wrapPrompt, accountLimits: config.accountLimits },
+    settings: { quickReplies: config.quickReplies, notifyOnExit: config.notifyOnExit, autoTrust: config.autoTrust, autoResume: config.autoResume, idleHours: config.idleHours, wrapPrompt: config.wrapPrompt, accountLimits: config.accountLimits },
     term: termUp,
   };
 }
@@ -842,7 +870,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith("/term/") || url.pathname === "/term") return proxyTerm(req, res);
   try {
     if (url.pathname.startsWith("/api/")) {
-      const body = req.method === "GET" ? {} : await readBody(req);
+      const body = req.method === "GET" || url.pathname === "/api/upload" ? {} : await readBody(req);
       switch (`${req.method} ${url.pathname}`) {
         case "GET /api/state": return send(res, 200, await state());
         case "GET /api/conversations": {
@@ -895,6 +923,7 @@ const server = http.createServer(async (req, res) => {
           for (const k of ["notifyOnExit", "autoTrust", "autoResume", "accountLimits"]) if (typeof body[k] === "boolean") { config[k] = body[k]; if (k === "accountLimits") limitsCache = { at: 0, value: null, error: null }; }
           if (Number(body.idleHours) > 0) config.idleHours = Number(body.idleHours);
           if (typeof body.wrapPrompt === "string" && body.wrapPrompt.trim()) config.wrapPrompt = body.wrapPrompt.trim();
+          if (Array.isArray(body.quickReplies)) config.quickReplies = body.quickReplies.filter((q) => typeof q === "string" && q.trim()).map((q) => q.trim()).slice(0, 12);
           saveConfig();
           return send(res, 200, await state());
         }
@@ -930,6 +959,25 @@ const server = http.createServer(async (req, res) => {
           knownCache.at = 0;
           event("project", { path: dir, git: body.git !== false });
           return send(res, 200, { path: dir, label: slug(name) });
+        }
+        case "POST /api/upload": {
+          // The body IS the file. No multipart parser, no dependency; the name and destination
+          // ride in the query. Used to get a photo or a log off a phone and into a project.
+          const dir = url.searchParams.get("path") || "";
+          const raw = path.basename(url.searchParams.get("name") || "");
+          if (!/^[\w .()\[\]-]{1,120}$/.test(raw)) throw new Error("Odd characters in that filename");
+          if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error("No such directory");
+          const chunks = [];
+          let size = 0;
+          await new Promise((resolve, reject) => {
+            req.on("data", (c) => { size += c.length; if (size > 64 * 1024 * 1024) { req.destroy(); reject(new Error("Over the 64 MB limit")); } else chunks.push(c); });
+            req.on("end", resolve); req.on("error", reject);
+          });
+          let target = path.join(dir, raw);
+          for (let n = 2; fs.existsSync(target); n++) target = path.join(dir, `${path.parse(raw).name}-${n}${path.parse(raw).ext}`);
+          await fsp.writeFile(target, Buffer.concat(chunks));
+          event("upload", { file: target, bytes: size });
+          return send(res, 200, { file: target, bytes: size });
         }
         case "GET /api/dir-check": { const p = url.searchParams.get("path") || ""; return send(res, 200, { ok: p.startsWith("/") && fs.existsSync(p) && fs.statSync(p).isDirectory(), path: p }); }
         default: return send(res, 404, { error: "no such route" });

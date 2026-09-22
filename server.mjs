@@ -41,6 +41,7 @@ const CONFIG_FILE = path.join(DATA, "config.json");
 const LIVE_FILE = path.join(DATA, "live.json");
 const EVENTS_FILE = path.join(DATA, "events.jsonl");
 const USAGE_FILE = path.join(DATA, "usage-index.json");
+const MODELS_FILE = path.join(DATA, "models-seen.json");
 const PROJECTS = path.join(HOME, ".claude", "projects");
 const REGISTRY = path.join(HOME, ".claude", "sessions");
 const CREDS = path.join(HOME, ".claude", ".credentials.json");
@@ -95,6 +96,10 @@ function loadConfig() {
     // Reading your Claude Code OAuth token to fetch your own account limits is opt-in: a tool you
     // just downloaded should not touch a credentials file until you say so.
     accountLimits: c.accountLimits === true,
+    // Watch for new Claude models. Reads the same OAuth token as the limits panel, so it is
+    // opt-in for the same reason: a tool you downloaded should not touch a credentials file
+    // until you say so.
+    modelWatch: c.modelWatch === true,
     // Optional shared secret. This app starts processes and types into them, so anything that can
     // reach it can run code as you. Empty = no check, which is only safe on a trusted network.
     token: typeof c.token === "string" ? c.token : (process.env.CLAUDE_SESSIONS_TOKEN || ""),
@@ -836,6 +841,48 @@ function newSkill({ name, description, scope, body }) {
   return { name: folder, file: path.join(dir, "SKILL.md") };
 }
 
+// ---------- new models ----------
+// Anthropic's own model list, read with the OAuth token Claude Code already saved. It carries a
+// created_at per model, so a release is simply an id we have not seen before. The first run
+// records everything silently: nobody wants a dozen notifications for models that shipped months
+// ago. Undocumented endpoint, same one the limits panel uses, so treat a failure as routine.
+let modelsSeen = readJson(MODELS_FILE, null);
+async function fetchModels() {
+  const token = readJson(CREDS, {})?.claudeAiOauth?.accessToken;
+  if (!token) throw new Error("no OAuth token in ~/.claude/.credentials.json");
+  const r = await fetch("https://api.anthropic.com/v1/models?limit=100", {
+    headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", "anthropic-version": "2023-06-01", "User-Agent": "claude-code/2.1.258" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!r.ok) throw new Error(`models endpoint ${r.status}`);
+  const j = await r.json();
+  return (j.data || []).map((m) => ({ id: m.id, name: m.display_name || m.id, created: m.created_at || null }))
+    .sort((a, b) => String(b.created).localeCompare(String(a.created)));
+}
+async function checkModels(reason = "timer") {
+  if (!config.modelWatch) return;
+  let models;
+  try { models = await fetchModels(); } catch (e) { log("model check:", e.message); return; }
+  if (!models.length) return;
+  const first = !modelsSeen;
+  const known = new Set(first ? [] : modelsSeen.known || []);
+  const fresh = models.filter((m) => !known.has(m.id));
+  modelsSeen = {
+    known: models.map((m) => m.id),
+    checkedAt: Date.now(),
+    latest: models[0],
+    // What the page shows until it is dismissed. A first run announces nothing.
+    unread: first ? [] : [...fresh, ...(modelsSeen.unread || []).filter((u) => !fresh.some((f) => f.id === u.id))].slice(0, 5),
+  };
+  writeJson(MODELS_FILE, modelsSeen);
+  if (first) { log(`model watch: first run, ${models.length} models recorded silently`); return; }
+  for (const m of fresh) {
+    event("new-model", { id: m.id, name: m.name, created: m.created });
+    discord(`${m.name} is out`, `\`${m.id}\`, released ${m.created ? m.created.slice(0, 10) : "recently"}.\nSet it with \`/model ${m.id}\` in a session, or as \`"model"\` in ~/.claude/settings.json.`);
+  }
+  if (fresh.length) log(`model watch (${reason}): new -> ${fresh.map((m) => m.id).join(", ")}`);
+}
+
 // ---------- state ----------
 async function state() {
   const [sessions, screens, known, mem] = await Promise.all([listSessions(), listScreens(), knownDirs(), unitMemory()]);
@@ -879,6 +926,12 @@ async function state() {
   for (const p of config.pinned) dirs.set(p.path, { path: p.path, label: labelFor(p.path), pinned: true, exists: fs.existsSync(p.path), lastUsed: 0, conversations: 0 });
   for (const k of known) { const d = dirs.get(k.path) || { path: k.path, label: labelFor(k.path), pinned: false, exists: true }; dirs.set(k.path, { ...d, lastUsed: k.lastUsed, conversations: k.conversations }); }
   for (const s of sessions) if (s.path && !dirs.has(s.path)) dirs.set(s.path, { path: s.path, label: s.label, pinned: false, exists: fs.existsSync(s.path), lastUsed: 0, conversations: 0 });
+  // Restarting this unit gives it a NEW cgroup, and the surviving sessions stay in the old one,
+  // so MemoryCurrent then reports only this process and the meter reads near zero while several
+  // gigabytes are actually in use. Summing what the sessions really hold fixes that; take
+  // whichever is larger so the figure never understates the load.
+  const rssTotal = [...sessions, ...screens].reduce((n, s) => n + (s.memory || 0), 0);
+  if (mem.current != null) mem.current = Math.max(mem.current, rssTotal);
   const lim = await accountLimits();
   return {
     host: os.hostname(), home: HOME, now, socket: SOCKET,
@@ -886,6 +939,7 @@ async function state() {
     sessions, screens, memory: mem,
     limits: lim.value, limitsError: lim.error, limitsOff: Boolean(lim.disabled),
     startup: config.startup, defaults: config.defaults, lastSession: config.lastSession,
+    models: modelsSeen ? { unread: modelsSeen.unread || [], latest: modelsSeen.latest || null, checkedAt: modelsSeen.checkedAt || 0 } : null,
     settings: { quickReplies: config.quickReplies, notifyOnExit: config.notifyOnExit, autoTrust: config.autoTrust, autoResume: config.autoResume, idleHours: config.idleHours, handoffHours: config.handoffHours, autoHandoff: config.autoHandoff, autoHandoffIdleMins: config.autoHandoffIdleMins, wrapPrompt: config.wrapPrompt, accountLimits: config.accountLimits },
     term: termUp,
   };
@@ -1141,6 +1195,11 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, await startSession({ path: sc.path, sessionId: sc.sessionId, origin: "migrated" }));
         }
         case "POST /api/startup/run": return send(res, 200, await runStartup("button"));
+        case "GET /api/models": { await checkModels("asked"); return send(res, 200, modelsSeen || { known: [], unread: [], latest: null }); }
+        case "POST /api/models/read": {
+          if (modelsSeen) { modelsSeen.unread = []; writeJson(MODELS_FILE, modelsSeen); }
+          return send(res, 200, await state());
+        }
         case "GET /api/usage": return send(res, 200, await usageReport());
         case "POST /api/usage/reindex": reindexUsage(); return send(res, 200, { ok: true });
         case "GET /api/events": return send(res, 200, readEvents(Number(url.searchParams.get("limit") || 80)));
@@ -1245,6 +1304,9 @@ server.listen(PORT, BIND, async () => {
   if (!config.token) log("NO TOKEN SET: anything that can reach this port can run commands as you. Trusted networks only, or set \"token\" in data/config.json.");
   await maybeRestoreAtBoot().catch((e) => log("boot restore failed:", e.message));
   setInterval(watch, 15_000); watch();
+  // A release is a rare event; six-hourly is plenty and keeps the undocumented endpoint quiet.
+  setTimeout(() => checkModels("startup"), 8000);
+  setInterval(() => checkModels("timer"), 6 * 3600_000);
   setInterval(probeTerm, 30_000); probeTerm();
   setTimeout(reindexUsage, 3000); setInterval(reindexUsage, 120_000);
 });

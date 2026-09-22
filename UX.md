@@ -191,3 +191,14 @@ files we own, and the SKILL.md itself behind a disclosure. Anthropic's bundled s
 so they list and switch but do not edit. Every change says it applies to new sessions.
 
 New skill writes a correct SKILL.md into the user folder or a pinned project.
+
+## New model releases (22 Sep)
+
+A card at the top of Sessions when a model appears that has not been seen before: its name in the
+accent colour, the id, the release date, a copy button and a dismiss. It is the only thing on that
+screen with an accent edge, because a release is rare enough to earn it.
+
+The source is Anthropic's own model list, read with the OAuth token Claude Code already saved, so
+it is opt-in in Settings for the same reason the usage limits are. Checked six-hourly. The first
+run records what already exists silently, because nobody wants a dozen notifications for models
+that shipped months ago. A release also goes to Discord.

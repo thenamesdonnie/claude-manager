@@ -233,6 +233,7 @@ const needsCount = () => state ? state.sessions.filter((s) => !s.dead && s.needs
 const sessionsEl = $('[data-screen="sessions"]');
 sessionsEl.innerHTML = `<header class="top"><h1>Sessions</h1><span class="sub" id="host"></span></header>
   <button class="btn key primary big" id="new-session">New session</button>
+  <div class="card newmodel" id="newmodel" hidden></div>
   <div class="card" id="memcard"></div>
   <div class="section-head"><h2>Running</h2><div id="running-actions"></div></div>
   <div id="session-list"></div><div class="empty" id="session-empty" hidden>Nothing running.</div>`;
@@ -253,7 +254,19 @@ function renderMemory() {
     <div class="memlist">${top.map((s) => `<div><span>${esc(s.name)}</span><span>${mb(s.memory)}</span></div>`).join("")}</div>
     ${pct > 85 ? `<div class="inline-error">Near the ${gb(max)} rail.</div>` : ""}`;
 }
+function renderModels() {
+  const el = $("#newmodel"), m = state.models;
+  const unread = m?.unread || [];
+  el.hidden = !unread.length;
+  if (!unread.length) return;
+  el.innerHTML = unread.map((u) => `<div class="row"><div class="grow"><div class="name">${esc(u.name)}</div><div class="meta">${esc(u.id)}${u.created ? " · released " + when(Date.parse(u.created)) : ""}</div></div></div>`).join("")
+    + `<div class="meta" style="white-space:normal;margin-top:8px">Switch a running session with <code>/model &lt;id&gt;</code>, or set it for every new one in <code>~/.claude/settings.json</code>.</div>
+       <div class="keys"><button class="btn key small" data-copy-model="${esc(unread[0].id)}">Copy id</button><button class="btn key small ghost" id="model-read">Dismiss</button></div>`;
+  $("#model-read").onclick = async () => { try { state = await api("POST", "/api/models/read"); renderAll(); } catch (e) { toast(e.message, true); } };
+  $$("[data-copy-model]", el).forEach((b) => (b.onclick = () => copy(b.dataset.copyModel)));
+}
 function renderSessions() {
+  renderModels();
   const n = state.sessions.filter((s) => !s.dead).length, k = needsCount();
   $("#host").innerHTML = `${esc(state.host)} · ${n} running${k ? ` <span class="badge">${k}</span>` : ""}${state.limits?.fiveHour ? ` · 5h ${Math.round(state.limits.fiveHour.percent)}%` : ""}`;
   renderMemory();
@@ -448,6 +461,7 @@ settingsEl.innerHTML = `<header class="top"><h1>Settings</h1></header>
   <div class="card setting" style="margin-top:14px"><div><div>Trust new folders for me</div><div class="meta">Answers the folder prompt for you.</div></div><label class="switch"><input type="checkbox" id="autoTrust"><span></span></label></div>
   <div class="card setting"><div><div>Resume after a memory-rail kill</div><div class="meta">Once, on the same conversation, with a Discord ping.</div></div><label class="switch"><input type="checkbox" id="autoResume"><span></span></label></div>
   <div class="card setting"><div><div>Discord ping when a session dies</div></div><label class="switch"><input type="checkbox" id="notifyOnExit"><span></span></label></div>
+  <div class="card setting"><div><div>Tell me when a new model is released</div><div class="meta">Checks Anthropic's model list every six hours, using the same saved token as the limits panel.</div></div><label class="switch"><input type="checkbox" id="modelWatch"><span></span></label></div>
   <div class="card setting"><div><div>Account limits</div><div class="meta">Reads the Claude login token saved on this machine to fetch your own usage limits.</div></div><label class="switch"><input type="checkbox" id="accountLimits"><span></span></label></div>
   <div class="card setting"><div><div>Offer to close after</div><div class="meta">hours idle</div></div><input class="field well short" id="idleHours" inputmode="numeric"></div>
   <div class="card setting"><div><div>Suggest a handoff after</div><div class="meta">hours without one</div></div><input class="field well short" id="handoffHours" inputmode="numeric"></div>
@@ -460,7 +474,7 @@ settingsEl.innerHTML = `<header class="top"><h1>Settings</h1></header>
   <div class="section-head"><h2>Event log</h2><button class="btn key small" id="events-refresh">Refresh</button></div><div class="card" id="events"><div class="empty">Loading…</div></div>
   <div class="section-head"><h2>How to attach</h2></div>
   <div class="card"><p style="margin:0 0 8px">From Termius on this box:</p><p style="margin:0"><code>cl</code> lists sessions, <code>cl rota-1</code> attaches.</p><p class="meta" style="white-space:normal;margin-top:8px">Detach with Ctrl-B then D. Own tmux socket, so plain <code>tmux ls</code> will not show them. Shortcut: <code>#sessions?start=&lt;label&gt;</code> opens the start sheet for a directory.</p></div>`;
-for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits"]) $("#" + k).onchange = (ev) => saveConfig({ [k]: ev.target.checked });
+for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits", "modelWatch"]) $("#" + k).onchange = (ev) => saveConfig({ [k]: ev.target.checked });
 $("#idleHours").onchange = (ev) => saveConfig({ idleHours: Number(ev.target.value) });
 $("#handoffHours").onchange = (ev) => saveConfig({ handoffHours: Number(ev.target.value) });
 $("#autoHandoff").onchange = (ev) => saveConfig({ autoHandoff: ev.target.checked });
@@ -477,7 +491,7 @@ async function loadEvents() {
 function renderSettings() {
   $("#mode-seg").innerHTML = MODES.map((m) => `<button class="${state.defaults.permissionMode === m ? "active" : ""}" data-m="${m}">${m}</button>`).join("");
   $$("#mode-seg button").forEach((b) => (b.onclick = () => saveConfig({ defaults: { permissionMode: b.dataset.m } })));
-  for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits"]) $("#" + k).checked = state.settings[k];
+  for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits", "modelWatch"]) $("#" + k).checked = state.settings[k];
   if (document.activeElement !== $("#idleHours")) $("#idleHours").value = state.settings.idleHours;
   if (document.activeElement !== $("#handoffHours")) $("#handoffHours").value = state.settings.handoffHours;
   $("#autoHandoff").checked = Boolean(state.settings.autoHandoff);

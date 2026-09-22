@@ -17,6 +17,7 @@
 #   cs restart <name> | cs kill <name>
 #   cs skills [search]               every skill, grouped, with what it costs a session
 #   cs skill <name> on|name-only|user-invocable-only|off
+#   cs models                        the model list, newest first, and anything unseen
 #   cs usage                         account limits and heaviest conversations
 #   cs events [n]                    the launcher's event log
 #
@@ -83,6 +84,12 @@ case "$cmd" in
   skill)
     [ $# -ge 2 ] || die "usage: cs skill <name> on|name-only|user-invocable-only|off"
     post /api/skill/mode "$(jq -n --arg n "$1" --arg m "$2" '{name:$n, mode:$m}')" | jq -r --arg n "$1" '.skills[] | select(.name == $n) | "\(.name) is now \(.mode) (applies to new sessions)"' ;;
+  models)
+    out=$(get /api/models)
+    if [ $raw = 1 ]; then echo "$out"; else
+      echo "$out" | jq -r 'if (.unread|length) > 0 then "NEW: " + ([.unread[] | "\(.name) (\(.id))"] | join(", ")) + "\n" else "" end'
+      echo "$out" | jq -r '.known[]' | head -12 | nl -w2 -s'  '
+    fi ;;
   usage)
     out=$(get /api/usage)
     if [ $raw = 1 ]; then echo "$out"; else

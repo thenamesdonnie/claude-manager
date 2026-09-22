@@ -51,6 +51,9 @@ left off or started fresh. No terminal, no typing.
 session cannot take the machine down quietly. A session killed by the rail is resumed once,
 automatically. Idle sessions are offered up for closing.
 
+**New models.** It notices when Anthropic ships one, on the page and in Discord, with the id ready
+to paste. Opt-in, six-hourly, and the first run stays quiet about models that already existed.
+
 **Usage.** Output tokens attributed per conversation, so you can see which piece of work is
 spending your window. Switch on account limits and it also shows your live 5-hour and 7-day bars.
 

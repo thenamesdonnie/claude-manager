@@ -263,3 +263,5 @@ pre.md { background: var(--well); border-radius: 12px; padding: 12px; margin: 10
 /* a new model is rare and worth noticing, so it gets the accent edge */
 .card.newmodel { box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 0 0 1.5px rgba(217,119,87,.55), 0 1px 0 rgba(0,0,0,.4); animation: card-in 240ms var(--ease) both; }
 .card.newmodel .name { color: var(--accent); }
+
+.rollwait { color: var(--accent); font-size: 12.5px; font-weight: 600; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -100,6 +100,11 @@ function loadConfig() {
     // opt-in for the same reason: a tool you downloaded should not touch a credentials file
     // until you say so.
     modelWatch: c.modelWatch === true,
+    // Keep Claude Code current and put sessions on it, unattended. Off by default: it restarts
+    // live sessions, which is not a thing to switch on for somebody.
+    autoUpdate: c.autoUpdate === true,
+    // How long a session must have been quiet before it is safe to roll under him.
+    autoRollIdleMins: Number(c.autoRollIdleMins) > 0 ? Number(c.autoRollIdleMins) : 10,
     // Optional shared secret. This app starts processes and types into them, so anything that can
     // reach it can run code as you. Empty = no check, which is only safe on a trusted network.
     token: typeof c.token === "string" ? c.token : (process.env.CLAUDE_SESSIONS_TOKEN || ""),
@@ -118,6 +123,7 @@ const wrapping = new Map(); // tmux name -> {sessionId, sentAt, promptSeen}
 // the resume doc the handoff just wrote. Stages: handoff -> clear -> prime.
 const cycling = new Map(); // tmux name -> {stage, sessionId, sentAt, promptSeen, sawBusy, startedAt}
 const resumed = new Map();  // tmux name -> last auto-resume time
+const rolled = new Map();   // tmux name -> last auto-roll time, so a failing one cannot thrash
 function labelFor(dir) { const pin = config.pinned.find((p) => p.path === dir); return slug(pin?.label || path.basename(dir)); }
 
 // ---------- event log ----------
@@ -163,6 +169,26 @@ function parentMap() {
   return parents;
 }
 function ancestors(pid, parents) { const out = []; let p = pid; for (let i = 0; i < 64 && p > 1; i++) { out.push(p); p = parents.get(p) || 0; } return out; }
+// A Claude with nothing running has only its MCP servers as children. A shell child means a
+// command is in flight, foreground or background, and an idle status will not tell you that:
+// idle means the model is not generating, not that nothing is happening. Rolling then kills it.
+function shellChildren(pid) {
+  let kids = [];
+  try { kids = fs.readdirSync("/proc").filter((d) => /^\d+$/.test(d)).filter((d) => {
+    try { const st = fs.readFileSync(`/proc/${d}/stat`, "utf8"); return Number(st.slice(st.lastIndexOf(")") + 2).split(" ")[1]) === pid; } catch { return false; }
+  }); } catch { return 0; }
+  let n = 0;
+  for (const k of kids) {
+    let comm = "";
+    try { comm = fs.readFileSync(`/proc/${k}/comm`, "utf8").trim(); } catch { continue; }
+    if (/^(bash|sh|zsh|python3?|node)$/.test(comm)) {
+      let cmd = "";
+      try { cmd = fs.readFileSync(`/proc/${k}/cmdline`, "utf8"); } catch {}
+      if (!/npm exec|mcp-server|serena|playwright/i.test(cmd)) n++;
+    }
+  }
+  return n;
+}
 function subtreeRss(rootPid, parents) {
   const children = new Map();
   for (const [c, p] of parents) { if (!children.has(p)) children.set(p, []); children.get(p).push(c); }
@@ -859,7 +885,9 @@ async function cliUpdate() {
 }
 // Rolling a session = restart it on the same conversation, which the resume path already does
 // losslessly. Only ever touch an IDLE session: restarting one mid-turn throws that turn away.
-async function rollSessions(names) {
+// `auto` adds the guards that only matter when nobody asked: leave anything he is attached to,
+// and leave anything that has only just gone quiet, because he is probably still reading it.
+async function rollSessions(names, auto = false) {
   const st = await state();
   const target = st.sessions.filter((s) => s.managed && !s.dead && (!names || names.includes(s.name)));
   const out = [];
@@ -867,10 +895,19 @@ async function rollSessions(names) {
     if (s.cliVersion && st.cli.version && s.cliVersion === st.cli.version) { out.push({ name: s.name, skipped: "already current" }); continue; }
     if (s.status === "busy") { out.push({ name: s.name, skipped: "busy, left alone" }); continue; }
     if (s.needs?.kind === "permission") { out.push({ name: s.name, skipped: "waiting on a permission prompt" }); continue; }
+    if (auto) {
+      if (s.attached) { out.push({ name: s.name, skipped: "attached in a terminal" }); continue; }
+      if (s.needs) { out.push({ name: s.name, skipped: "waiting on you" }); continue; }
+      const quiet = s.idleFor || (Date.now() - s.lastActivity);
+      if (quiet < config.autoRollIdleMins * 60_000) { out.push({ name: s.name, skipped: `only quiet ${Math.round(quiet / 60000)}m` }); continue; }
+      if (s.working) { out.push({ name: s.name, skipped: `${s.working} command${s.working > 1 ? "s" : ""} still running` }); continue; }
+      if (Date.now() - (rolled.get(s.name) || 0) < 30 * 60_000) { out.push({ name: s.name, skipped: "rolled recently" }); continue; }
+      rolled.set(s.name, Date.now());
+    }
     try { const r = await restartSession(s.name); out.push({ name: s.name, rolled: r.name }); await sleep(1500); }
     catch (e) { out.push({ name: s.name, error: e.message }); }
   }
-  event("roll", { results: out });
+  if (out.some((r) => r.rolled || r.error)) event("roll", { results: out.filter((r) => r.rolled || r.error) });
   return out;
 }
 
@@ -944,6 +981,10 @@ async function state() {
     s.idleFor = s.status === "idle" ? now - s.statusSince : 0;
     s.stale = !s.dead && s.status === "idle" && s.idleFor > config.idleHours * 3600_000;
     s.memory = s.dead ? 0 : subtreeRss(s.pid, parents);
+    s.working = !s.dead && r ? shellChildren(r.pid) : 0;
+    // Why this session is not on the installed version yet. The roll is a standing check rather
+    // than a one-shot, so "busy" means queued: the next pass after it goes quiet takes it.
+    s.rollWait = null;
     s.wrapping = wrapping.has(s.name);
     s.cycling = cycling.get(s.name)?.stage || null;
     s.title = await titleFor(s.path, s.sessionId);
@@ -963,6 +1004,17 @@ async function state() {
   // so MemoryCurrent then reports only this process and the meter reads near zero while several
   // gigabytes are actually in use. Summing what the sessions really hold fixes that; take
   // whichever is larger so the figure never understates the load.
+  const version0 = await cliVersion();
+  for (const s of sessions) {
+    if (s.dead || !s.managed || !s.cliVersion || !version0 || s.cliVersion === version0) continue;
+    const quiet = s.idleFor || (Date.now() - s.lastActivity);
+    s.rollWait = s.status === "busy" ? "when it finishes"
+      : s.working ? `when ${s.working} command${s.working > 1 ? "s" : ""} finish`
+      : s.attached ? "when you detach"
+      : s.needs ? "when you answer it"
+      : quiet < config.autoRollIdleMins * 60_000 ? `in ${Math.max(1, Math.ceil((config.autoRollIdleMins * 60_000 - quiet) / 60_000))} min`
+      : "next pass";
+  }
   const rssTotal = [...sessions, ...screens].reduce((n, s) => n + (s.memory || 0), 0);
   if (mem.current != null) mem.current = Math.max(mem.current, rssTotal);
   const lim = await accountLimits();
@@ -976,7 +1028,7 @@ async function state() {
     limits: lim.value, limitsError: lim.error, limitsOff: Boolean(lim.disabled),
     startup: config.startup, defaults: config.defaults, lastSession: config.lastSession,
     models: modelsSeen ? { unread: modelsSeen.unread || [], latest: modelsSeen.latest || null, checkedAt: modelsSeen.checkedAt || 0 } : null,
-    settings: { quickReplies: config.quickReplies, notifyOnExit: config.notifyOnExit, autoTrust: config.autoTrust, autoResume: config.autoResume, idleHours: config.idleHours, handoffHours: config.handoffHours, autoHandoff: config.autoHandoff, autoHandoffIdleMins: config.autoHandoffIdleMins, wrapPrompt: config.wrapPrompt, accountLimits: config.accountLimits },
+    settings: { quickReplies: config.quickReplies, notifyOnExit: config.notifyOnExit, autoTrust: config.autoTrust, autoResume: config.autoResume, idleHours: config.idleHours, handoffHours: config.handoffHours, autoHandoff: config.autoHandoff, autoHandoffIdleMins: config.autoHandoffIdleMins, wrapPrompt: config.wrapPrompt, accountLimits: config.accountLimits, modelWatch: config.modelWatch, autoUpdate: config.autoUpdate, autoRollIdleMins: config.autoRollIdleMins },
     term: termUp,
   };
 }
@@ -1070,6 +1122,10 @@ async function watch() {
     let changed = false;
     for (const n of Object.keys(live)) if (!sessions.some((s) => s.name === n) && Date.now() - live[n].startedAt > 30_000) { delete live[n]; changed = true; }
     if (changed) saveLive();
+    // Not "roll when an update lands" but a standing invariant: a session behind the installed
+    // version gets rolled as soon as it is safe to. A session that was busy when the update
+    // arrived is simply picked up on a later pass.
+    if (config.autoUpdate) await autoRoll();
   } catch (e) { log("watch:", e.message); }
 }
 // A /clear keeps the transcript on disk and starts a NEW session id, so the
@@ -1109,6 +1165,18 @@ async function advanceCycle(name, c, registry) {
   }
 }
 
+let autoRolling = false;
+async function autoRoll() {
+  if (autoRolling) return;
+  autoRolling = true;
+  try {
+    const st = await state();
+    if (!st.cli.version || !st.cli.behind.length) return;
+    const results = (await rollSessions(null, true)).filter((r) => r.rolled);
+    if (results.length) discord("Sessions rolled onto a new Claude", `${st.cli.version}: ${results.map((r) => r.name).join(", ")}.`);
+  } catch (e) { log("autoRoll:", e.message); }
+  finally { autoRolling = false; }
+}
 async function finishWrap(name) {
   if (!wrapping.has(name)) return;
   wrapping.delete(name);
@@ -1253,8 +1321,9 @@ const server = http.createServer(async (req, res) => {
           if (Array.isArray(body.startup)) config.startup = body.startup.filter((e) => e && typeof e.path === "string").map((e) => ({ path: e.path, resume: e.resume || "last", ...(e.permissionMode ? { permissionMode: e.permissionMode } : {}) }));
           if (Array.isArray(body.pinned)) config.pinned = body.pinned.filter((p) => p && typeof p.path === "string").map((p) => ({ path: p.path, label: slug(p.label || path.basename(p.path)) }));
           if (body.defaults && typeof body.defaults === "object") config.defaults = { ...config.defaults, ...body.defaults };
-          for (const k of ["notifyOnExit", "autoTrust", "autoResume", "accountLimits", "autoHandoff"]) if (typeof body[k] === "boolean") { config[k] = body[k]; if (k === "accountLimits") limitsCache = { at: 0, value: null, error: null }; }
+          for (const k of ["notifyOnExit", "autoTrust", "autoResume", "accountLimits", "autoHandoff", "modelWatch", "autoUpdate"]) if (typeof body[k] === "boolean") { config[k] = body[k]; if (k === "accountLimits") limitsCache = { at: 0, value: null, error: null }; }
           if (Number(body.idleHours) > 0) config.idleHours = Number(body.idleHours);
+          if (Number(body.autoRollIdleMins) > 0) config.autoRollIdleMins = Number(body.autoRollIdleMins);
           if (Number(body.handoffHours) > 0) config.handoffHours = Number(body.handoffHours);
           if (Number(body.autoHandoffIdleMins) > 0) config.autoHandoffIdleMins = Number(body.autoHandoffIdleMins);
           if (typeof body.wrapPrompt === "string" && body.wrapPrompt.trim()) config.wrapPrompt = body.wrapPrompt.trim();
@@ -1353,6 +1422,9 @@ server.listen(PORT, BIND, async () => {
   // A release is a rare event; six-hourly is plenty and keeps the undocumented endpoint quiet.
   setTimeout(() => checkModels("startup"), 8000);
   setInterval(() => checkModels("timer"), 6 * 3600_000);
+  // Claude Code updates itself now, but only while something is running it. Asking daily means
+  // a box that sat idle still ends up current.
+  setInterval(async () => { if (config.autoUpdate) { const r = await cliUpdate(); if (r.before !== r.after) log(`auto update: ${r.before} -> ${r.after}`); } }, 24 * 3600_000);
   setInterval(probeTerm, 30_000); probeTerm();
   setTimeout(reindexUsage, 3000); setInterval(reindexUsage, 120_000);
 });

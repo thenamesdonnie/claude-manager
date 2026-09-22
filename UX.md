@@ -207,6 +207,22 @@ The session sheet shows that session's own version, and says when a newer one is
 The new-model card's primary action is **Use for new sessions**, which writes Claude Code's own
 model setting. A copy button is not an action.
 
+## Doing it unattended (22 Sep)
+
+One switch in Settings, off by default because it restarts live sessions. When on, the updater
+runs daily and every session is expected to be on the installed version.
+
+It is a standing check rather than a one-shot, which is what makes queueing work: a session that
+is busy when the update lands is skipped and picked up on a later pass. The card says which, in
+its own line in the accent colour, because "updates when it finishes" is the actionable part and
+the single-line meta above it truncates.
+
+It refuses to roll a session that is busy, attached to a terminal, waiting on you, quiet for less
+than the threshold, or running a shell command. That last one matters and status will not tell
+you: idle means the model is not generating, not that nothing is happening. A Claude with nothing
+running has only its MCP servers as children, so any other shell child is work in flight, and
+rolling would kill it.
+
 ## New model releases (22 Sep)
 
 A card at the top of Sessions when a model appears that has not been seen before: its name in the

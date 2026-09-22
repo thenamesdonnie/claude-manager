@@ -56,6 +56,9 @@ with, so a new model never reaches it until it restarts. The page shows which se
 and rolls them onto the installed version, resuming each conversation and refusing to touch
 anything busy.
 
+Switch on the unattended version and it updates daily and rolls each session as it becomes safe,
+queueing the busy ones until they finish.
+
 **New models.** It notices when Anthropic ships one, on the page and in Discord, with the id ready
 to paste. Opt-in, six-hourly, and the first run stays quiet about models that already existed.
 

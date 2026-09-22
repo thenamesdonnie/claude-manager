@@ -79,8 +79,13 @@ function loadConfig() {
     defaults: { permissionMode: "default", ...(c.defaults || {}) },
     notifyOnExit: c.notifyOnExit !== false,
     autoTrust: c.autoTrust !== false,
+    autoHandoff: c.autoHandoff === true,                      // OFF by default: it clears conversations
+    autoHandoffIdleMins: Number(c.autoHandoffIdleMins) > 0 ? Number(c.autoHandoffIdleMins) : 45,
+    autoHandoffPrompt: typeof c.autoHandoffPrompt === "string" && c.autoHandoffPrompt.trim() ? c.autoHandoffPrompt
+      : "We just handed off automatically and cleared. Read this project's resume doc (todo.md or whatever it uses) and its memory index, then give me a short summary of where we got to and the exact next step. Don't start work yet.",
     autoResume: c.autoResume !== false,
     idleHours: Number(c.idleHours) > 0 ? Number(c.idleHours) : 6,
+    handoffHours: Number(c.handoffHours) > 0 ? Number(c.handoffHours) : 3,   // nag after this long with no handoff
     wrapPrompt: typeof c.wrapPrompt === "string" && c.wrapPrompt.trim() ? c.wrapPrompt : "/handoff",
     // Lines you send often, one tap each. Typing a sentence on a phone is the slow part of
     // steering a session from the sofa.
@@ -103,6 +108,10 @@ let live = readJson(LIVE_FILE, {}); // tmux name -> {path, sessionId, permission
 const saveLive = () => writeJson(LIVE_FILE, live);
 const needs = new Map();   // sessionId -> {kind, at, message}
 const wrapping = new Map(); // tmux name -> {sessionId, sentAt, promptSeen}
+// Auto handoff-then-clear. Same completion detection as a wrap-up, but instead
+// of closing the session it clears it and primes the fresh conversation from
+// the resume doc the handoff just wrote. Stages: handoff -> clear -> prime.
+const cycling = new Map(); // tmux name -> {stage, sessionId, sentAt, promptSeen, sawBusy, startedAt}
 const resumed = new Map();  // tmux name -> last auto-resume time
 function labelFor(dir) { const pin = config.pinned.find((p) => p.path === dir); return slug(pin?.label || path.basename(dir)); }
 
@@ -309,6 +318,143 @@ async function wrapUp(name, prompt) {
   await sendKeys(name, { text, keys: ["Enter"] });
   wrapping.set(name, { sessionId: meta.sessionId, sentAt: Date.now(), promptSeen: false, sawBusy: false });
   event("wrap-up", { name, prompt: text });
+}
+
+// ---------- handoff tracking ----------
+// A handoff is the thing that stops a session's knowledge dying with it, so the
+// page should say when the last one was and nag when it has been a while. The
+// only honest record of one is the transcript itself: `cs wrapup` and a typed
+// /handoff both land as the same line, so one detector covers every route.
+//
+// The marker is RARE, which is what makes this cheap. A raw buffer search over
+// every transcript on this box - 140 files, 1.29 GB - takes ~370 ms cold, so
+// the per-file size+mtime cache below is about not repeating that on every
+// poll rather than about the scan being slow.
+const HANDOFF_FILE = path.join(DATA, "handoff-index.json");
+const HANDOFF_MARKS = {
+  handoff: Buffer.from("<command-name>/handoff</command-name>"),
+  clear: Buffer.from("<command-name>/clear</command-name>"),
+};
+let handoffIdx = readJson(HANDOFF_FILE, { files: {} });
+let handoffAt = 0;
+
+// Only a USER message whose content is a plain STRING is a real slash command.
+// Without that test the marker also matches itself quoted inside a tool call or
+// its output, which is exactly how the first version of this reported a handoff
+// that was really just a grep for the word.
+function scanTranscript(file, from = 0) {
+  const events = [];
+  let fd;
+  try { fd = fs.openSync(file, "r"); } catch { return { size: 0, events }; }
+  try {
+    const size = fs.fstatSync(fd).size;
+    const CHUNK = 4 << 20, OVERLAP = 1 << 16;
+    let pos = Math.max(0, from);
+    if (pos >= size) return { size, events };
+    const buf = Buffer.alloc(CHUNK);
+    while (pos < size) {
+      const n = fs.readSync(fd, buf, 0, CHUNK, pos);
+      if (n <= 0) break;
+      const hay = buf.subarray(0, n);
+      for (const kind of Object.keys(HANDOFF_MARKS)) {
+        const needle = HANDOFF_MARKS[kind];
+        let i = 0;
+        while ((i = hay.indexOf(needle, i)) !== -1) {
+          let a = hay.lastIndexOf(10, i); a = a === -1 ? 0 : a + 1;
+          let b = hay.indexOf(10, i); if (b === -1) b = n;
+          try {
+            const j = JSON.parse(hay.subarray(a, b).toString("utf8"));
+            if (j.type === "user" && typeof j.message?.content === "string" && j.timestamp)
+              events.push({ kind, ts: j.timestamp, off: pos + a });
+          } catch { /* a line straddling the chunk edge; the overlap re-reads it */ }
+          i += needle.length;
+        }
+      }
+      if (n < CHUNK) break;
+      pos += n - OVERLAP;                       // overlap so a marker on the seam is not missed
+    }
+    return { size, events };
+  } finally { try { fs.closeSync(fd); } catch {} }
+}
+
+function refreshHandoffIndex(ttl = 15_000) {
+  if (Date.now() - handoffAt < ttl) return handoffIdx;
+  handoffAt = Date.now();
+  const files = {};
+  let projects = [];
+  try { projects = fs.readdirSync(PROJECTS); } catch { return handoffIdx; }
+  for (const proj of projects) {
+    const dir = path.join(PROJECTS, proj);
+    let entries = [];
+    try { if (!fs.statSync(dir).isDirectory()) continue; entries = fs.readdirSync(dir); } catch { continue; }
+    for (const f of entries) {
+      if (!f.endsWith(".jsonl")) continue;
+      const fp = path.join(dir, f);
+      let st; try { st = fs.statSync(fp); } catch { continue; }
+      const prev = handoffIdx.files?.[fp];
+      // Transcripts are append-only, so an unchanged file is reused outright and
+      // a grown one is scanned only from where the last scan stopped. A file that
+      // SHRANK was rewritten, so it has to be read again from the top.
+      if (prev && prev.size === st.size && prev.mtime === st.mtimeMs) { files[fp] = prev; continue; }
+      const from = prev && st.size > prev.size ? prev.size : 0;
+      const r = scanTranscript(fp, from);
+      const events = from > 0 ? [...(prev.events || []), ...r.events] : r.events;
+      files[fp] = { size: r.size, mtime: st.mtimeMs, events };
+    }
+  }
+  handoffIdx = { files };
+  try { writeJson(HANDOFF_FILE, handoffIdx); } catch { /* the index is a cache; losing it costs 370 ms */ }
+  return handoffIdx;
+}
+
+// What the page needs for one session: when this CONVERSATION was last handed
+// off, how much has piled up since, and when the PROJECT was last handed off at
+// all (which is the number that matters for a project nobody has touched in
+// weeks).
+function handoffFor(dir, sessionId, startedAt) {
+  const idx = refreshHandoffIndex();
+  const out = { last: null, clear: null, sinceMs: null, bytesSince: 0, projectLast: null, recommend: false, reason: null };
+  if (!dir) return out;
+  const pdir = projectDirFor(dir);
+  let newestProject = null;
+  for (const [fp, rec] of Object.entries(idx.files || {})) {
+    if (path.dirname(fp) !== pdir) continue;
+    for (const e of rec.events || []) {
+      if (e.kind !== "handoff") continue;
+      if (!newestProject || e.ts > newestProject) newestProject = e.ts;
+    }
+  }
+  out.projectLast = newestProject;
+
+  const file = sessionId ? path.join(pdir, sessionId + ".jsonl") : null;
+  const rec = file ? idx.files?.[file] : null;
+  if (rec) {
+    let last = null;
+    for (const e of rec.events || []) {
+      if (e.kind === "handoff" && (!last || e.ts > last.ts)) last = e;
+      if (e.kind === "clear" && (!out.clear || e.ts > out.clear)) out.clear = e.ts;
+    }
+    if (last) { out.last = last.ts; out.bytesSince = Math.max(0, rec.size - last.off); }
+    else out.bytesSince = rec.size;
+  }
+  const from = out.last ? Date.parse(out.last) : startedAt || null;
+  if (from) out.sinceMs = Date.now() - from;
+
+  // Time alone is the wrong test. A session parked for four days with two
+  // messages in it has nothing to hand off, and nagging about it trains the
+  // nag to be ignored. So there has to be WORK as well as age - except when
+  // there is a great deal of work, which is worth saying however recent it is.
+  const hours = (config.handoffHours ?? 3) * 3600_000;
+  const SOME = 1 << 20;        // ~1 MB of transcript: past "just got started"
+  const LOTS = 8 << 20;        // ~8 MB: enough that losing it would actually hurt
+  if (out.bytesSince >= LOTS) {
+    out.recommend = true;
+    out.reason = "a lot has happened since the last handoff";
+  } else if (out.bytesSince >= SOME && out.sinceMs != null && out.sinceMs > hours) {
+    out.recommend = true;
+    out.reason = out.last ? "nothing handed off for a while" : "no handoff yet this session";
+  }
+  return out;
 }
 
 // ---------- conversations (titles from the transcript) ----------
@@ -719,7 +865,9 @@ async function state() {
     s.stale = !s.dead && s.status === "idle" && s.idleFor > config.idleHours * 3600_000;
     s.memory = s.dead ? 0 : subtreeRss(s.pid, parents);
     s.wrapping = wrapping.has(s.name);
+    s.cycling = cycling.get(s.name)?.stage || null;
     s.title = await titleFor(s.path, s.sessionId);
+    s.handoff = s.dead ? null : handoffFor(s.path, s.sessionId, s.createdAt);
     delete s.claude;
   }
   for (const sc of screens) {
@@ -738,7 +886,7 @@ async function state() {
     sessions, screens, memory: mem,
     limits: lim.value, limitsError: lim.error, limitsOff: Boolean(lim.disabled),
     startup: config.startup, defaults: config.defaults, lastSession: config.lastSession,
-    settings: { quickReplies: config.quickReplies, notifyOnExit: config.notifyOnExit, autoTrust: config.autoTrust, autoResume: config.autoResume, idleHours: config.idleHours, wrapPrompt: config.wrapPrompt, accountLimits: config.accountLimits },
+    settings: { quickReplies: config.quickReplies, notifyOnExit: config.notifyOnExit, autoTrust: config.autoTrust, autoResume: config.autoResume, idleHours: config.idleHours, handoffHours: config.handoffHours, autoHandoff: config.autoHandoff, autoHandoffIdleMins: config.autoHandoffIdleMins, wrapPrompt: config.wrapPrompt, accountLimits: config.accountLimits },
     term: termUp,
   };
 }
@@ -803,11 +951,74 @@ async function watch() {
       if (done) { await finishWrap(name); continue; }
       if (Date.now() - w.sentAt > 30 * 60_000) { wrapping.delete(name); event("wrap-up-timeout", { name }); }
     }
+    // Auto handoff. Only for sessions this app started, only when they have gone
+    // quiet, and only when there is genuinely something to save - the same
+    // recommend test the card uses, so the nag and the automation never disagree.
+    for (const [name, c] of cycling) {
+      try { await advanceCycle(name, c, registry); } catch (e) { log("cycle:", e.message); }
+      if (cycling.has(name) && Date.now() - c.startedAt > 45 * 60_000) {
+        cycling.delete(name); event("auto-handoff-timeout", { name });
+      }
+    }
+    if (config.autoHandoff) {
+      for (const s2 of sessions) {
+        if (s2.dead || !live[s2.name]) continue;
+        if (wrapping.has(s2.name) || cycling.has(s2.name)) continue;
+        if (s2.status !== "idle") continue;
+        // Never touch a session that is sitting on a permission prompt: it is
+        // waiting for a person, and typing past it would answer for them.
+        if (s2.needs?.kind === "permission") continue;
+        if (s2.idleFor < config.autoHandoffIdleMins * 60_000) continue;
+        if (!s2.handoff?.recommend) continue;
+        await sendKeys(s2.name, { text: (config.wrapPrompt || "/handoff").trim(), keys: ["Enter"] });
+        cycling.set(s2.name, { stage: "handoff", sessionId: s2.sessionId, sentAt: Date.now(),
+                               promptSeen: false, sawBusy: false, startedAt: Date.now() });
+        event("auto-handoff", { name: s2.name, path: s2.path, idleFor: s2.idleFor, reason: s2.handoff.reason });
+        log(`auto-handoff ${s2.name}: idle ${Math.round(s2.idleFor / 60000)}m, ${s2.handoff.reason}`);
+      }
+    }
     let changed = false;
     for (const n of Object.keys(live)) if (!sessions.some((s) => s.name === n) && Date.now() - live[n].startedAt > 30_000) { delete live[n]; changed = true; }
     if (changed) saveLive();
   } catch (e) { log("watch:", e.message); }
 }
+// A /clear keeps the transcript on disk and starts a NEW session id, so the
+// launcher has to let go of the old one. state() only adopts an id when the
+// session has none, so nulling it here is what makes it pick up the new
+// conversation instead of reporting on the dead one forever.
+function forgetSessionId(name) {
+  const meta = live[name];
+  if (!meta) return;
+  meta.sessionId = null;
+  saveLive();
+}
+
+async function advanceCycle(name, c, registry) {
+  const r = registry.find((x) => x.sessionId === c.sessionId);
+  if (r?.status === "busy") c.sawBusy = true;
+  const settled = r?.status === "idle" && (r.statusUpdatedAt || 0) > c.sentAt + 3000
+    && Date.now() - c.sentAt > 20_000 && (c.sawBusy || c.promptSeen);
+
+  if (c.stage === "handoff") {
+    if (!settled) return;
+    await sendKeys(name, { text: "/clear", keys: ["Enter"] });
+    event("auto-clear", { name });
+    Object.assign(c, { stage: "clear", sentAt: Date.now(), promptSeen: false, sawBusy: false });
+    forgetSessionId(name);
+    return;
+  }
+  if (c.stage === "clear") {
+    // /clear is instant and answers no hook, so this is just a settle pause
+    // before typing into a prompt box that has only just been redrawn.
+    if (Date.now() - c.sentAt < 6000) return;
+    await sendKeys(name, { text: config.autoHandoffPrompt.trim(), keys: ["Enter"] });
+    event("auto-prime", { name });
+    cycling.delete(name);
+    discord(`Claude session ${name} handed off and cleared`,
+      "It was idle with work worth saving. The transcript is still on disk and can be resumed.");
+  }
+}
+
 async function finishWrap(name) {
   if (!wrapping.has(name)) return;
   wrapping.delete(name);
@@ -831,6 +1042,7 @@ function onHook(body) {
   } else if (ev === "UserPromptSubmit") {
     needs.delete(sid);
     for (const w of wrapping.values()) if (w.sessionId === sid) w.promptSeen = true;
+    for (const c of cycling.values()) if (c.sessionId === sid) c.promptSeen = true;
   } else if (ev === "SessionEnd") {
     needs.delete(sid); event("session-end", { sessionId: sid, reason: body.reason, cwd: body.cwd });
   }
@@ -897,6 +1109,22 @@ const server = http.createServer(async (req, res) => {
         case "POST /api/kill": await killSession(body.name); return send(res, 200, { ok: true });
         case "POST /api/restart": return send(res, 200, await restartSession(body.name));
         case "POST /api/wrapup": await wrapUp(body.name, body.prompt); return send(res, 200, { ok: true });
+        // Wrap up hands off AND closes. These two are the same handoff without
+        // the closing, so a long session can be checkpointed and carry on, and
+        // /clear is offered separately because a clean restart from the resume
+        // doc beats auto-compaction.
+        case "POST /api/handoff": {
+          const meta = live[body.name]; if (!meta) throw new Error("Not a session this app started");
+          await sendKeys(body.name, { text: (body.prompt || "/handoff").trim(), keys: ["Enter"] });
+          event("handoff", { name: body.name, path: meta.path });
+          return send(res, 200, { ok: true });
+        }
+        case "POST /api/clear": {
+          const meta = live[body.name]; if (!meta) throw new Error("Not a session this app started");
+          await sendKeys(body.name, { text: "/clear", keys: ["Enter"] });
+          event("clear", { name: body.name, path: meta.path });
+          return send(res, 200, { ok: true });
+        }
         case "POST /api/close-idle": {
           const st = await state(); const closed = [];
           for (const s of st.sessions) if (s.stale && s.managed) { await killSession(s.name, "idle-cull"); closed.push(s.name); }
@@ -920,8 +1148,10 @@ const server = http.createServer(async (req, res) => {
           if (Array.isArray(body.startup)) config.startup = body.startup.filter((e) => e && typeof e.path === "string").map((e) => ({ path: e.path, resume: e.resume || "last", ...(e.permissionMode ? { permissionMode: e.permissionMode } : {}) }));
           if (Array.isArray(body.pinned)) config.pinned = body.pinned.filter((p) => p && typeof p.path === "string").map((p) => ({ path: p.path, label: slug(p.label || path.basename(p.path)) }));
           if (body.defaults && typeof body.defaults === "object") config.defaults = { ...config.defaults, ...body.defaults };
-          for (const k of ["notifyOnExit", "autoTrust", "autoResume", "accountLimits"]) if (typeof body[k] === "boolean") { config[k] = body[k]; if (k === "accountLimits") limitsCache = { at: 0, value: null, error: null }; }
+          for (const k of ["notifyOnExit", "autoTrust", "autoResume", "accountLimits", "autoHandoff"]) if (typeof body[k] === "boolean") { config[k] = body[k]; if (k === "accountLimits") limitsCache = { at: 0, value: null, error: null }; }
           if (Number(body.idleHours) > 0) config.idleHours = Number(body.idleHours);
+          if (Number(body.handoffHours) > 0) config.handoffHours = Number(body.handoffHours);
+          if (Number(body.autoHandoffIdleMins) > 0) config.autoHandoffIdleMins = Number(body.autoHandoffIdleMins);
           if (typeof body.wrapPrompt === "string" && body.wrapPrompt.trim()) config.wrapPrompt = body.wrapPrompt.trim();
           if (Array.isArray(body.quickReplies)) config.quickReplies = body.quickReplies.filter((q) => typeof q === "string" && q.trim()).map((q) => q.trim()).slice(0, 12);
           saveConfig();

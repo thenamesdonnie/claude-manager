@@ -197,9 +197,29 @@ const head = (title, path, { back = false, extra = "" } = {}) => `<div class="he
 const MODES = ["default", "auto", "acceptEdits", "plan"];
 
 // ---------- status ----------
+// The launcher knows when a session was last handed off because the transcript
+// records it. Saying so on the card is the whole point: an unsaved session is
+// invisible until it is lost.
+function handoffMeta(h) {
+  if (!h) return "";
+  if (h.last) return ` · handed off ${ago(Date.parse(h.last))} ago`;
+  return " · never handed off";
+}
+function handoffNote(h) {
+  if (!h) return "";
+  const bits = [];
+  bits.push(h.last ? `Last handoff in this conversation was <b>${ago(Date.parse(h.last))} ago</b>.`
+                   : "This conversation has <b>never been handed off</b>.");
+  if (h.bytesSince) bits.push(`${mb(h.bytesSince)} of it since then.`);
+  if (h.projectLast) bits.push(`Last handoff anywhere in this project: ${ago(Date.parse(h.projectLast))} ago.`);
+  else bits.push("No handoff has ever been recorded for this project.");
+  return bits.join(" ");
+}
+
 function pillFor(s) {
   if (s.dead) return `<span class="pill dead">exited ${s.exitStatus === 137 ? "· killed" : s.exitStatus}</span>`;
   if (s.wrapping) return `<span class="pill busy">wrapping up</span>`;
+  if (s.cycling) return `<span class="pill busy">auto ${s.cycling === "handoff" ? "handing off" : "clearing"}</span>`;
   if (s.needs?.kind === "permission") return `<span class="pill needs">needs permission</span>`;
   if (s.status === "busy") return `<span class="pill live">working</span>`;
   if (s.needs) return `<span class="pill needs">your turn</span>`;
@@ -220,7 +240,8 @@ $("#new-session").onclick = () => newSessionFlow("start");
 function sessionCard(s) {
   const title = s.command ? s.command : s.title && s.title !== "Untitled conversation" ? s.title : s.managed ? "Fresh conversation, nothing said yet" : "Not started by this app";
   const flag = !s.dead && s.needs && s.status !== "busy";
-  return `<button class="card tappable key ${s.dead ? "dead" : ""} ${flag ? "needs" : ""}" data-session="${esc(s.name)}"><div class="row"><div class="grow"><div class="name">${esc(s.name)}</div><div class="title">${esc(title)}</div><div class="meta">${esc(s.path || "")} · up ${ago(s.createdAt)} · ${mb(s.memory)}${s.worktree ? " · worktree" : ""}${s.attached ? " · attached" : ""}</div></div>${pillFor(s)}</div></button>`;
+  const h = s.handoff;
+  return `<button class="card tappable key ${s.dead ? "dead" : ""} ${flag ? "needs" : ""} ${h?.recommend ? "handoff-due" : ""}" data-session="${esc(s.name)}"><div class="row"><div class="grow"><div class="name">${esc(s.name)}</div><div class="title">${esc(title)}</div><div class="meta">${esc(s.path || "")} · up ${ago(s.createdAt)} · ${mb(s.memory)}${s.worktree ? " · worktree" : ""}${s.attached ? " · attached" : ""}${handoffMeta(h)}</div></div>${pillFor(s)}</div></button>`;
 }
 function renderMemory() {
   const m = state.memory; if (!m || m.current == null) { $("#memcard").hidden = true; return; }
@@ -429,6 +450,9 @@ settingsEl.innerHTML = `<header class="top"><h1>Settings</h1></header>
   <div class="card setting"><div><div>Discord ping when a session dies</div></div><label class="switch"><input type="checkbox" id="notifyOnExit"><span></span></label></div>
   <div class="card setting"><div><div>Account limits</div><div class="meta">Reads the Claude login token saved on this machine to fetch your own usage limits.</div></div><label class="switch"><input type="checkbox" id="accountLimits"><span></span></label></div>
   <div class="card setting"><div><div>Offer to close after</div><div class="meta">hours idle</div></div><input class="field well short" id="idleHours" inputmode="numeric"></div>
+  <div class="card setting"><div><div>Suggest a handoff after</div><div class="meta">hours without one</div></div><input class="field well short" id="handoffHours" inputmode="numeric"></div>
+  <div class="card setting"><div><div>Do it automatically</div><div class="meta">hand off, clear, then summarise, when a session has gone quiet with work worth saving</div></div><input type="checkbox" id="autoHandoff"></div>
+  <div class="card setting"><div><div>Only after it has been quiet for</div><div class="meta">minutes idle</div></div><input class="field well short" id="autoHandoffIdleMins" inputmode="numeric"></div>
   <div class="card"><div>Wrap-up message</div><div class="meta" style="white-space:normal">Sent by Wrap up. The session closes when Claude finishes.</div><input class="field well" id="wrapPrompt" style="margin-top:8px" autocapitalize="off"></div>
   <div class="card"><div>Quick replies</div><div class="meta" style="white-space:normal">One tap each, under the message box in a session. One per line.</div><textarea class="field well" id="quickReplies" style="margin-top:8px;min-height:100px"></textarea></div>
   <div class="section-head"><h2>Pinned directories</h2></div><div class="card" id="pinned"></div>
@@ -438,6 +462,9 @@ settingsEl.innerHTML = `<header class="top"><h1>Settings</h1></header>
   <div class="card"><p style="margin:0 0 8px">From Termius on this box:</p><p style="margin:0"><code>cl</code> lists sessions, <code>cl rota-1</code> attaches.</p><p class="meta" style="white-space:normal;margin-top:8px">Detach with Ctrl-B then D. Own tmux socket, so plain <code>tmux ls</code> will not show them. Shortcut: <code>#sessions?start=&lt;label&gt;</code> opens the start sheet for a directory.</p></div>`;
 for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits"]) $("#" + k).onchange = (ev) => saveConfig({ [k]: ev.target.checked });
 $("#idleHours").onchange = (ev) => saveConfig({ idleHours: Number(ev.target.value) });
+$("#handoffHours").onchange = (ev) => saveConfig({ handoffHours: Number(ev.target.value) });
+$("#autoHandoff").onchange = (ev) => saveConfig({ autoHandoff: ev.target.checked });
+$("#autoHandoffIdleMins").onchange = (ev) => saveConfig({ autoHandoffIdleMins: Number(ev.target.value) });
 $("#wrapPrompt").onchange = (ev) => saveConfig({ wrapPrompt: ev.target.value });
 $("#quickReplies").onchange = (ev) => saveConfig({ quickReplies: ev.target.value.split("\n") });
 $("#events-refresh").onclick = loadEvents;
@@ -452,6 +479,9 @@ function renderSettings() {
   $$("#mode-seg button").forEach((b) => (b.onclick = () => saveConfig({ defaults: { permissionMode: b.dataset.m } })));
   for (const k of ["autoTrust", "autoResume", "notifyOnExit", "accountLimits"]) $("#" + k).checked = state.settings[k];
   if (document.activeElement !== $("#idleHours")) $("#idleHours").value = state.settings.idleHours;
+  if (document.activeElement !== $("#handoffHours")) $("#handoffHours").value = state.settings.handoffHours;
+  $("#autoHandoff").checked = Boolean(state.settings.autoHandoff);
+  if (document.activeElement !== $("#autoHandoffIdleMins")) $("#autoHandoffIdleMins").value = state.settings.autoHandoffIdleMins;
   if (document.activeElement !== $("#wrapPrompt")) $("#wrapPrompt").value = state.settings.wrapPrompt;
   if (document.activeElement !== $("#quickReplies")) $("#quickReplies").value = (state.settings.quickReplies || []).join("\n");
   const pinned = state.dirs.filter((d) => d.pinned);
@@ -638,6 +668,15 @@ function sessionSheet(name) {
       <div class="keys" data-keys></div>
       <form class="sendline" data-send><input class="field well" placeholder="Message" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send"><button class="btn key">Send</button></form>
       <div class="strip quick" data-quick></div>
+      ${s0.managed ? `<div class="card handoff ${s0.handoff?.recommend ? "due" : ""}" data-handoff style="margin-top:14px">
+        <div class="row"><div class="grow"><div class="name">${s0.handoff?.recommend ? "Worth handing off" : "Handoff"}</div>
+        <div class="meta" style="white-space:normal">${handoffNote(s0.handoff)}</div></div></div>
+        <div class="keys" style="margin-top:10px">
+          <button class="btn key small ${s0.handoff?.recommend ? "primary" : ""}" data-do-handoff>Hand off now</button>
+          <button class="btn key small" data-do-clear>Clear</button>
+        </div>
+        <div class="meta" style="white-space:normal;margin-top:8px">Hand off updates the resume doc, the living docs and the project memory, and leaves the session open. Clear starts a fresh conversation in the same directory. Do the handoff first.</div>
+      </div>` : ""}
       <div class="keys" style="margin-top:14px">
         ${s0.appUrl ? `<a class="btn key small primary link-btn" href="${esc(s0.appUrl)}" target="_blank" rel="noopener">Open in Claude</a>` : ""}
         <button class="btn key small" data-copy>Copy attach</button>
@@ -650,6 +689,18 @@ function sessionSheet(name) {
     $("[data-kill]", el).onclick = (e) => { const s = current(); if (s?.dead) return doKill(); armConfirm(e.currentTarget, "Kill?", doKill); };
     $("[data-restart]", el)?.addEventListener("click", (e) => { const s = current(); if (s?.dead) return doRestart(); armConfirm(e.currentTarget, "Restart?", doRestart); });
     $("[data-wrap]", el)?.addEventListener("click", (e) => armConfirm(e.currentTarget, "Wrap up?", async () => { try { await api("POST", "/api/wrapup", { name }); toast("Wrapping up"); refreshSheet(); } catch (err) { toast(err.message, true); } }));
+    $("[data-do-handoff]", el)?.addEventListener("click", async (e) => {
+      const b = e.currentTarget; b.disabled = true; b.textContent = "Handing off…";
+      try { await api("POST", "/api/handoff", { name }); toast("Handoff sent"); refreshSheet(); }
+      catch (err) { toast(err.message, true); b.disabled = false; b.textContent = "Hand off now"; }
+    });
+    // Clear throws the conversation away, so it asks first. The handoff is what
+    // makes that safe, which is why the copy tells you to do it in that order.
+    $("[data-do-clear]", el)?.addEventListener("click", (e) =>
+      armConfirm(e.currentTarget, "Clear this conversation?", async () => {
+        try { await api("POST", "/api/clear", { name }); toast("Cleared"); refreshSheet(); }
+        catch (err) { toast(err.message, true); }
+      }));
     $("[data-send]", el).onsubmit = (ev) => { ev.preventDefault(); const i = $("input", ev.target); const t = i.value; i.value = ""; send({ text: t, keys: ["Enter"] }); };
     const quick = $("[data-quick]", el);
     quick.innerHTML = (state.settings.quickReplies || []).map((q) => `<button class="btn key small" data-q="${esc(q)}">${esc(q)}</button>`).join("");

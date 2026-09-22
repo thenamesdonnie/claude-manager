@@ -252,3 +252,10 @@ pre.md { background: var(--well); border-radius: 12px; padding: 12px; margin: 10
 .strip.quick { display: flex; gap: 8px; overflow-x: auto; padding: 8px 2px 2px; scrollbar-width: none; touch-action: pan-x; }
 .strip.quick::-webkit-scrollbar { display: none; }
 .strip.quick .btn { flex: none; white-space: nowrap; font-weight: 550; }
+
+/* Handoff nudge. A session that has never been handed off is one power cut away
+   from losing everything it worked out, so it gets a warm edge rather than the
+   red used for errors: this is a suggestion, not a fault. */
+.card.handoff-due { border-left: 3px solid var(--warn, #d08b3c); }
+.card.handoff { background: var(--well, rgba(255,255,255,.04)); }
+.card.handoff.due { border: 1px solid var(--warn, #d08b3c); }

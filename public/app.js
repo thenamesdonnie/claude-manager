@@ -234,6 +234,7 @@ const sessionsEl = $('[data-screen="sessions"]');
 sessionsEl.innerHTML = `<header class="top"><h1>Sessions</h1><span class="sub" id="host"></span></header>
   <button class="btn key primary big" id="new-session">New session</button>
   <div class="card newmodel" id="newmodel" hidden></div>
+  <div class="card" id="clicard" hidden></div>
   <div class="card" id="memcard"></div>
   <div class="section-head"><h2>Running</h2><div id="running-actions"></div></div>
   <div id="session-list"></div><div class="empty" id="session-empty" hidden>Nothing running.</div>`;
@@ -261,12 +262,34 @@ function renderModels() {
   if (!unread.length) return;
   el.innerHTML = unread.map((u) => `<div class="row"><div class="grow"><div class="name">${esc(u.name)}</div><div class="meta">${esc(u.id)}${u.created ? " · released " + when(Date.parse(u.created)) : ""}</div></div></div>`).join("")
     + `<div class="meta" style="white-space:normal;margin-top:8px">Switch a running session with <code>/model &lt;id&gt;</code>, or set it for every new one in <code>~/.claude/settings.json</code>.</div>
-       <div class="keys"><button class="btn key small" data-copy-model="${esc(unread[0].id)}">Copy id</button><button class="btn key small ghost" id="model-read">Dismiss</button></div>`;
+       <div class="keys"><button class="btn key small primary" id="model-default">Use for new sessions</button><button class="btn key small" data-copy-model="${esc(unread[0].id)}">Copy id</button><button class="btn key small ghost" id="model-read">Dismiss</button></div>`;
+  $("#model-default").onclick = (e) => armConfirm(e.currentTarget, `Default to ${unread[0].name}?`, async () => {
+    try { await api("POST", "/api/model/default", { id: unread[0].id }); toast(`New sessions will use ${unread[0].name}`); }
+    catch (err) { toast(err.message, true); }
+  });
   $("#model-read").onclick = async () => { try { state = await api("POST", "/api/models/read"); renderAll(); } catch (e) { toast(e.message, true); } };
   $$("[data-copy-model]", el).forEach((b) => (b.onclick = () => copy(b.dataset.copyModel)));
 }
+function renderCli() {
+  const el = $("#clicard"), c = state.cli;
+  if (!c || !c.behind.length) { el.hidden = true; return; }
+  el.hidden = false;
+  el.innerHTML = `<div class="meter-row"><span><b>${c.behind.length} session${c.behind.length > 1 ? "s" : ""} on an older Claude</b></span><b>${esc(c.oldest || "?")} → ${esc(c.version || "?")}</b></div>
+    <div class="meta" style="white-space:normal;margin-top:6px">A session keeps the version it started with, so new models and features do not reach it until it restarts. Rolling resumes the same conversation, and anything busy is left alone.</div>
+    <div class="keys"><button class="btn key small primary" id="cli-roll">Roll ${c.behind.length} onto ${esc(c.version || "latest")}</button><button class="btn key small" id="cli-update">Check for an update</button></div>`;
+  $("#cli-roll").onclick = (e) => armConfirm(e.currentTarget, "Roll idle sessions?", async () => {
+    toast("Rolling…");
+    try { const r = await api("POST", "/api/cli/roll"); toast(r.map((x) => x.rolled ? `${x.name} rolled` : `${x.name}: ${x.skipped || x.error}`).join(" · ")); await refresh(); }
+    catch (err) { toast(err.message, true); }
+  });
+  $("#cli-update").onclick = async (e) => {
+    const b = e.currentTarget; b.disabled = true; b.innerHTML = `<span class="spinner"></span> Updating`;
+    try { const r = await api("POST", "/api/cli/update"); toast(r.before === r.after ? `Already on ${r.after}` : `${r.before} → ${r.after}`); await refresh(); }
+    catch (err) { toast(err.message, true); b.disabled = false; b.textContent = "Check for an update"; }
+  };
+}
 function renderSessions() {
-  renderModels();
+  renderModels(); renderCli();
   const n = state.sessions.filter((s) => !s.dead).length, k = needsCount();
   $("#host").innerHTML = `${esc(state.host)} · ${n} running${k ? ` <span class="badge">${k}</span>` : ""}${state.limits?.fiveHour ? ` · 5h ${Math.round(state.limits.fiveHour.percent)}%` : ""}`;
   renderMemory();
@@ -675,7 +698,7 @@ function sessionSheet(name) {
   const useTerm = state.term && !s0.dead && typeof Terminal !== "undefined";
   const step = sheet.push(`${head(name, `${s0.title && s0.title !== "Untitled conversation" ? s0.title : "Fresh conversation"}`, { extra: `<span data-pill>${pillFor(s0)}</span>` })}
     <div class="body">
-      <div class="meta" style="white-space:normal">${esc(s0.path || "")} · up ${ago(s0.createdAt)} · ${mb(s0.memory)}${s0.permissionMode && s0.permissionMode !== "default" ? " · " + esc(s0.permissionMode) : ""}${s0.claudeName && s0.claudeName !== name ? " · Claude calls it " + esc(s0.claudeName) : ""}</div>
+      <div class="meta" style="white-space:normal">${esc(s0.path || "")} · up ${ago(s0.createdAt)} · ${mb(s0.memory)}${s0.permissionMode && s0.permissionMode !== "default" ? " · " + esc(s0.permissionMode) : ""}${s0.cliVersion ? " · claude " + esc(s0.cliVersion) + (state.cli?.version && s0.cliVersion !== state.cli.version ? ` (${esc(state.cli.version)} available)` : "") : ""}${s0.claudeName && s0.claudeName !== name ? " · Claude calls it " + esc(s0.claudeName) : ""}</div>
       <div data-needs></div>
       <div data-exited></div>
       ${useTerm ? `<div class="term" data-term></div>` : `<pre class="screen well" data-screen>…</pre>`}

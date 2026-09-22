@@ -18,6 +18,8 @@
 #   cs skills [search]               every skill, grouped, with what it costs a session
 #   cs skill <name> on|name-only|user-invocable-only|off
 #   cs models                        the model list, newest first, and anything unseen
+#   cs update                        update Claude Code itself (no sudo, native install)
+#   cs roll [name...]                restart sessions onto the installed version, skipping busy ones
 #   cs usage                         account limits and heaviest conversations
 #   cs events [n]                    the launcher's event log
 #
@@ -84,6 +86,10 @@ case "$cmd" in
   skill)
     [ $# -ge 2 ] || die "usage: cs skill <name> on|name-only|user-invocable-only|off"
     post /api/skill/mode "$(jq -n --arg n "$1" --arg m "$2" '{name:$n, mode:$m}')" | jq -r --arg n "$1" '.skills[] | select(.name == $n) | "\(.name) is now \(.mode) (applies to new sessions)"' ;;
+  update) post /api/cli/update '{}' | jq -r '"\(.before) -> \(.after)"' ;;
+  roll)
+    body=$(jq -n --args '{names: ($ARGS.positional | if length==0 then null else . end)}' -- "$@")
+    post /api/cli/roll "$body" | jq -r '.[] | "\(.name): \(.rolled // .skipped // .error)"' ;;
   models)
     out=$(get /api/models)
     if [ $raw = 1 ]; then echo "$out"; else

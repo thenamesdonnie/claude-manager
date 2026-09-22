@@ -51,6 +51,11 @@ left off or started fresh. No terminal, no typing.
 session cannot take the machine down quietly. A session killed by the rail is resumed once,
 automatically. Idle sessions are offered up for closing.
 
+**Stay current without losing work.** A running session keeps the Claude Code binary it started
+with, so a new model never reaches it until it restarts. The page shows which sessions are behind
+and rolls them onto the installed version, resuming each conversation and refusing to touch
+anything busy.
+
 **New models.** It notices when Anthropic ships one, on the page and in Discord, with the id ready
 to paste. Opt-in, six-hourly, and the first run stays quiet about models that already existed.
 

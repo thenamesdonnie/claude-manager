@@ -192,6 +192,21 @@ so they list and switch but do not edit. Every change says it applies to new ses
 
 New skill writes a correct SKILL.md into the user folder or a pinned project.
 
+## Keeping Claude Code current (22 Sep)
+
+A session keeps the binary it started with. That is why a new model looks unavailable in
+everything already running, and updating alone does not fix it.
+
+A card on Sessions when any session is behind: how many, the version they are on, the version
+installed, and two buttons. **Roll** restarts each one on the same conversation, which the resume
+path already does losslessly, and it refuses to touch a session that is busy or sitting on a
+permission prompt. **Check for an update** runs the updater and reports the version change.
+
+The session sheet shows that session's own version, and says when a newer one is available.
+
+The new-model card's primary action is **Use for new sessions**, which writes Claude Code's own
+model setting. A copy button is not an action.
+
 ## New model releases (22 Sep)
 
 A card at the top of Sessions when a model appears that has not been seen before: its name in the

@@ -841,6 +841,39 @@ function newSkill({ name, description, scope, body }) {
   return { name: folder, file: path.join(dir, "SKILL.md") };
 }
 
+// ---------- the Claude Code binary itself ----------
+// A session keeps the binary it started with, so installing a new Claude Code does nothing for
+// anything already running: that is why a new model seems unavailable until sessions are rolled.
+// Both commands go through a login shell so they resolve the same `claude` a session would.
+async function cliVersion() {
+  try { const { stdout } = await run("bash", ["-lc", "claude --version"], { timeout: 15_000 }); return (stdout.match(/[\d.]+/) || [null])[0]; }
+  catch { return null; }
+}
+async function cliUpdate() {
+  const before = await cliVersion();
+  const { stdout, stderr } = await run("bash", ["-lc", "claude update"], { timeout: 300_000, maxBuffer: 4 << 20 }).catch((e) => ({ stdout: e.stdout || "", stderr: e.stderr || e.message }));
+  const after = await cliVersion();
+  event("cli-update", { before, after });
+  if (after && before !== after) discord("Claude Code updated", `${before} to ${after}. Sessions still on ${before} need rolling.`);
+  return { before, after, output: String(stdout || stderr).trim().split("\n").slice(-6).join("\n") };
+}
+// Rolling a session = restart it on the same conversation, which the resume path already does
+// losslessly. Only ever touch an IDLE session: restarting one mid-turn throws that turn away.
+async function rollSessions(names) {
+  const st = await state();
+  const target = st.sessions.filter((s) => s.managed && !s.dead && (!names || names.includes(s.name)));
+  const out = [];
+  for (const s of target) {
+    if (s.cliVersion && st.cli.version && s.cliVersion === st.cli.version) { out.push({ name: s.name, skipped: "already current" }); continue; }
+    if (s.status === "busy") { out.push({ name: s.name, skipped: "busy, left alone" }); continue; }
+    if (s.needs?.kind === "permission") { out.push({ name: s.name, skipped: "waiting on a permission prompt" }); continue; }
+    try { const r = await restartSession(s.name); out.push({ name: s.name, rolled: r.name }); await sleep(1500); }
+    catch (e) { out.push({ name: s.name, error: e.message }); }
+  }
+  event("roll", { results: out });
+  return out;
+}
+
 // ---------- new models ----------
 // Anthropic's own model list, read with the OAuth token Claude Code already saved. It carries a
 // created_at per model, so a release is simply an id we have not seen before. The first run
@@ -902,7 +935,7 @@ async function state() {
     if (r) {
       if (!s.sessionId) s.sessionId = r.sessionId;
       if (!s.path) s.path = r.cwd;
-      s.claudeName = r.name; s.bridge = r.bridgeSessionId || null;
+      s.claudeName = r.name; s.bridge = r.bridgeSessionId || null; s.cliVersion = r.version || null;
       s.status = r.status; s.statusSince = r.statusUpdatedAt || r.updatedAt || s.createdAt;
       if (r.status === "busy") needs.delete(r.sessionId);
     }
@@ -933,7 +966,10 @@ async function state() {
   const rssTotal = [...sessions, ...screens].reduce((n, s) => n + (s.memory || 0), 0);
   if (mem.current != null) mem.current = Math.max(mem.current, rssTotal);
   const lim = await accountLimits();
+  const version = await cliVersion();
+  const behind = sessions.filter((s) => !s.dead && s.cliVersion && version && s.cliVersion !== version).map((s) => s.name);
   return {
+    cli: { version, behind, oldest: [...new Set(sessions.map((s) => s.cliVersion).filter(Boolean))].sort()[0] || null },
     host: os.hostname(), home: HOME, now, socket: SOCKET,
     dirs: [...dirs.values()].sort((a, b) => (b.pinned - a.pinned) || (b.lastUsed - a.lastUsed)),
     sessions, screens, memory: mem,
@@ -1195,6 +1231,16 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, await startSession({ path: sc.path, sessionId: sc.sessionId, origin: "migrated" }));
         }
         case "POST /api/startup/run": return send(res, 200, await runStartup("button"));
+        case "POST /api/cli/update": return send(res, 200, await cliUpdate());
+        case "POST /api/cli/roll": return send(res, 200, await rollSessions(Array.isArray(body.names) ? body.names : null));
+        case "POST /api/model/default": {
+          // What actually makes new sessions use a model: Claude Code's own setting.
+          const id = String(body.id || "");
+          if (!/^[a-z0-9.\-\[\]]{3,60}$/i.test(id)) throw new Error("That does not look like a model id");
+          const st = readSettings(); st.model = id; writeSettings(st);
+          event("default-model", { id });
+          return send(res, 200, { model: id });
+        }
         case "GET /api/models": { await checkModels("asked"); return send(res, 200, modelsSeen || { known: [], unread: [], latest: null }); }
         case "POST /api/models/read": {
           if (modelsSeen) { modelsSeen.unread = []; writeJson(MODELS_FILE, modelsSeen); }

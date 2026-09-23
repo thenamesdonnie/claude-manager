@@ -26,6 +26,9 @@ cs send rota-2 "also check the tips page"   # type a line, press Enter
 cs keys rota-2 Escape                    # a key: Enter Escape Up Down Tab BTab C-c
 cs wrapup rota-2                         # sends /handoff, closes when Claude finishes
 cs kill rota-2
+cs models                                # every model, newest first, and any not seen before
+cs update                                # update Claude Code itself (native install, no sudo)
+cs roll [name...]                        # restart sessions onto the installed version, skipping busy ones
 cs skills [search]                       # every skill, grouped yours/installed/anthropic, with context cost
 cs skill hyperframes user-invocable-only # on | name-only | user-invocable-only | off
 cs usage                                 # account limits and the heaviest conversations
@@ -53,6 +56,11 @@ cs usage                                 # account limits and the heaviest conve
 - **Skills.** `cs skills` shows what every skill costs a session in characters; `cs skill <name> <mode>`
   changes it by writing `skillOverrides` in `~/.claude/settings.json`. It applies to sessions started
   afterwards, never the running one. Do not switch a skill off unless the user asked.
+- **Versions.** A session keeps the Claude Code binary it started with, so a new model or feature
+  does not reach anything already running until it restarts. `cs roll` restarts sessions on the
+  same conversation, which loses nothing, and refuses anything busy, attached, waiting on the
+  user, or running a shell command. With `autoUpdate` on it happens by itself and a busy session
+  is queued until it is free, so you rarely need to run it by hand.
 - **Limits.** `cs usage` reads the real 5-hour and 7-day percentages from the account. If the user asks
   how much usage is left, this is the answer, not a guess.
 

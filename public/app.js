@@ -24,6 +24,15 @@ const tok = (n) => n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e3 ? Math.round
 const gb = (b) => b == null ? "?" : (b / 1073741824).toFixed(b > 1073741824 ? 1 : 2) + " GB";
 const mb = (b) => b == null ? "?" : b > 1073741824 ? (b / 1073741824).toFixed(1) + " GB" : Math.round(b / 1048576) + " MB";
 const haptic = () => { try { navigator.vibrate?.(8); } catch {} };
+// iOS Safari only paints :active on touch when something listens for touchstart; without this the
+// keys are dead faces in a home-screen app. And every key confirms its tap with a buzz and a ring.
+document.addEventListener("touchstart", () => {}, { passive: true });
+document.addEventListener("click", (e) => {
+  const k = e.target.closest(".key"); if (!k || k.disabled) return;
+  haptic();
+  k.classList.remove("pressed"); void k.offsetWidth; k.classList.add("pressed");
+  k.addEventListener("animationend", () => k.classList.remove("pressed"), { once: true });
+}, true);
 async function api(method, url, body) {
   const r = await fetch(url, { method, headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({}));
